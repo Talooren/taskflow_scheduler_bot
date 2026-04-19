@@ -60,9 +60,8 @@ async def check_stale() -> None:
         try:
             msg = await _bot.send_message(
                 cfg.moderator_group_id,
-                f"⏰ Задача #{task['task_number']} не взята уже 30 минут.\n"
-                f"Название: {task['task_name']}\n"
-                f"Опубликовать повторно?",
+                f"⏰ Задача #{task['task_number']} — {task['task_name']}\n"
+                f"не взята уже 30 минут. Опубликовать повторно?",
                 reply_markup=stale_notification_kb(record_id),
             )
         except Exception as e:
@@ -87,9 +86,8 @@ async def check_stale_force() -> None:
         try:
             await _bot.send_message(
                 cfg.moderator_group_id,
-                f"⏰ Задача #{task['task_number']} не взята.\n"
-                f"Название: {task['task_name']}\n"
-                f"Опубликовать повторно?",
+                f"⏰ Задача #{task['task_number']} — {task['task_name']}\n"
+                f"не взята. Опубликовать повторно?",
                 reply_markup=stale_notification_kb(record_id),
             )
         except Exception as e:
@@ -131,9 +129,8 @@ async def check_pending_moderation() -> None:
 
         hours_elapsed = int(elapsed // 3600)
         text = (
-            f"⌛ Напоминание: результат по задаче #{rec.get('task_number')} "
+            f"⌛ Напоминание: задача #{rec.get('task_number')} — {rec.get('task_name')}\n"
             f"ждёт модерации уже {hours_elapsed} ч.\n"
-            f"Название: {rec.get('task_name')}\n"
             f"Исполнитель: @{rec.get('username')}"
         )
 

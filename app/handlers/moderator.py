@@ -32,6 +32,23 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 
+def _clean_task_name(fields: dict) -> str:
+    """Получить человекочитаемое название из Airtable-полей.
+
+    Поле «Название задачи» (multipleLookupValues) — lookup из таблицы
+    Задачи — даёт чистое короткое название. «Этап» — formula, клеит
+    статус + режим + название + номер («Очередь Выполнение - ... (102)»)
+    и визуально перегружает UI. Берём первое — фоллбэк на второе.
+    """
+    name_lookup = fields.get("Название задачи")
+    if isinstance(name_lookup, list) and name_lookup:
+        return str(name_lookup[0]).strip()
+    if isinstance(name_lookup, str) and name_lookup.strip():
+        return name_lookup.strip()
+    # fallback на Этап
+    return fields.get("Этап", "") or ""
+
+
 # ── Панель модератора ──────────────────────────────────────────────────────────
 
 @router.message(Command("панель", "panel"))
@@ -98,7 +115,7 @@ async def on_panel_action(callback: CallbackQuery) -> None:
                 await db.update_task_fields(
                     task["record_id"],
                     {
-                        "task_name": fields.get("Этап", task["task_name"]),
+                        "task_name": _clean_task_name(fields) or task["task_name"],
                         "task_text": fields.get("Для отправки", task["task_text"]),
                         "mode": fields.get("Режим"),
                         "limit_hours": fields.get("Лимит (час)", task["limit_hours"]),
@@ -168,7 +185,7 @@ async def _handle_task_count_input(message: Message) -> None:
         record_id = task["id"]
         fields = task.get("fields", {})
         task_number = fields.get("Id")
-        task_name = fields.get("Этап", "")
+        task_name = _clean_task_name(fields)
         task_text = fields.get("Для отправки", "")
         mode = fields.get("Режим")
         limit_raw = fields.get("Лимит (час)")
@@ -187,9 +204,7 @@ async def _handle_task_count_input(message: Message) -> None:
     for task in loaded:
         task_preview = (
             f"📋 Задача #{task['task_number']}\n"
-            f"Название: {task['task_name']}\n"
-            f"Лимит: {task['limit_hours']} ч\n"
-            f"Режим: {task['mode'] or '—'}\n\n"
+            f"{task['task_name']}\n\n"
             f"{task['task_text']}"
         )
         # Карточка после загрузки — решение принимает модератор, поэтому

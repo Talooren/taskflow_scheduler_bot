@@ -223,25 +223,59 @@ async def insert_task(
     mode: str | None,
     limit_hours: float,
 ) -> bool:
+    """UPSERT: если запись уже есть в БД со статусом 'loaded' или 'done' —
+    она «сбрасывается» обратно в loaded с обновлёнными полями (кейс: Airtable
+    вернул задачу в Очередь после закрытия или редактирования). Если запись
+    в 'published' или 'assigned' — UPDATE не делается, чтобы не затереть
+    активную работу исполнителя.
+
+    Возвращает True, если строка вставлена или обновлена; False, если задача
+    занята (published/assigned) и пропущена."""
     if _use_postgres:
         async with _pg_pool.acquire() as con:
             result = await con.execute(
                 """
-                INSERT INTO tasks (record_id, task_number, task_name, task_text, mode, limit_hours)
-                VALUES ($1, $2, $3, $4, $5, $6)
-                ON CONFLICT (record_id) DO NOTHING
+                INSERT INTO tasks (record_id, task_number, task_name, task_text,
+                                   mode, limit_hours, status, loaded_at)
+                VALUES ($1, $2, $3, $4, $5, $6, 'loaded', NOW())
+                ON CONFLICT (record_id) DO UPDATE SET
+                    task_number  = EXCLUDED.task_number,
+                    task_name    = EXCLUDED.task_name,
+                    task_text    = EXCLUDED.task_text,
+                    mode         = EXCLUDED.mode,
+                    limit_hours  = EXCLUDED.limit_hours,
+                    status       = 'loaded',
+                    chat_id      = NULL,
+                    message_id   = NULL,
+                    published_at = NULL,
+                    loaded_at    = NOW()
+                WHERE tasks.status IN ('loaded', 'done')
                 """,
                 record_id, task_number, task_name, task_text, mode, limit_hours,
             )
+            # INSERT 0 1 — если вставилось ИЛИ сработал DO UPDATE;
+            # INSERT 0 0 — если WHERE отсёк UPDATE (active task).
             return result == "INSERT 0 1"
     else:
         con = _get_sqlite_conn()
         try:
             cur = con.execute(
                 """
-                INSERT OR IGNORE INTO tasks
-                    (record_id, task_number, task_name, task_text, mode, limit_hours)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO tasks (record_id, task_number, task_name, task_text,
+                                   mode, limit_hours, status, loaded_at)
+                VALUES (?, ?, ?, ?, ?, ?, 'loaded', datetime('now'))
+                ON CONFLICT(record_id) DO UPDATE SET
+                    task_number  = excluded.task_number,
+                    task_name    = excluded.task_name,
+                    task_text    = excluded.task_text,
+                    mode         = excluded.mode,
+                    limit_hours  = excluded.limit_hours,
+                    status       = 'loaded',
+                    chat_id      = NULL,
+                    message_id   = NULL,
+                    published_at = NULL,
+                    loaded_at    = datetime('now')
+                WHERE tasks.status IN ('loaded', 'done')
                 """,
                 (record_id, task_number, task_name, task_text, mode, limit_hours),
             )

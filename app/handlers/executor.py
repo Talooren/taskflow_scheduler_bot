@@ -57,8 +57,7 @@ async def handle_private(message: Message, bot: Bot) -> None:
 
     # Карточка для модераторов
     header = (
-        f"📨 Результат по задаче #{task_number}\n"
-        f"Название: {task_name}\n"
+        f"📨 Результат по задаче #{task_number} — {task_name}\n"
         f"Исполнитель: @{username} (id: {user_id})"
     )
 
