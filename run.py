@@ -12,7 +12,6 @@ import sys
 from pathlib import Path
 
 from aiogram import Bot, Dispatcher
-from aiogram.client.default import DefaultBotProperties
 from aiogram.fsm.storage.memory import MemoryStorage
 
 from app.config import cfg
@@ -58,10 +57,11 @@ async def main() -> None:
         logger.info("Прогрет кэш результатов: %s записей", warmed)
 
     # Bot и Dispatcher
-    bot = Bot(
-        token=cfg.bot_token,
-        default=DefaultBotProperties(parse_mode="MarkdownV2"),
-    )
+    # parse_mode по дефолту не задаём — многие служебные сообщения содержат
+    # символы, зарезервированные в MarkdownV2 (#, ., -, ( ) и т.д.),
+    # а те места, где форматирование реально нужно (on_publish / on_restale,
+    # cmd_start, cmd_status) указывают parse_mode явно с fallback на plain.
+    bot = Bot(token=cfg.bot_token)
     storage = MemoryStorage()
     dp = Dispatcher(storage=storage)
 
