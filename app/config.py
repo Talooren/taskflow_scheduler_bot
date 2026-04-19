@@ -35,11 +35,17 @@ class Config:
         self.group_id: int = int(_require("GROUP_ID"))
         self.moderator_group_id: int = int(_require("MODERATOR_GROUP_ID"))
 
-        # Модераторы
+        # Модераторы: основной источник — таблица «Команда» Airtable
+        # (username'ы подтягиваются в cfg.moderator_usernames при старте
+        # и обновляются раз в 5 минут планировщиком — см. run.py и
+        # app/scheduler.py). MODERATOR_IDS в .env остаётся как
+        # break-glass fallback: пользователи из него всегда модераторы,
+        # даже если Airtable недоступен.
         _ids = _opt("MODERATOR_IDS", "")
         self.moderator_ids: set[int] = {
             int(x.strip()) for x in _ids.split(",") if x.strip().isdigit()
         }
+        self.moderator_usernames: set[str] = set()  # пополняется async из Airtable
 
         # PostgreSQL (опционально — при пустом значении используется SQLite)
         self.pg_dsn: str = _opt("PG_DSN", "")
@@ -60,8 +66,25 @@ class Config:
             if self.test_user_id:
                 self.moderator_ids.add(self.test_user_id)
 
-    def is_moderator(self, user_id: int) -> bool:
-        return user_id in self.moderator_ids
+    def is_moderator(self, user) -> bool:
+        """Проверка прав модератора. Принимает aiogram-User (обычно
+        `message.from_user` или `callback.from_user`). Модератором считается:
+        1) user.id из MODERATOR_IDS (.env, break-glass owner-доступ), ИЛИ
+        2) user.username из кэша cfg.moderator_usernames, который наполняется
+           из таблицы «Команда» Airtable (нормализация: lowercase, без @)."""
+        if user is None:
+            return False
+        # break-glass: список id в .env
+        uid = getattr(user, "id", None)
+        if uid is not None and uid in self.moderator_ids:
+            return True
+        # основной путь: username в таблице «Команда»
+        uname = getattr(user, "username", None)
+        if uname:
+            normalized = uname.strip().lstrip("@").lower()
+            if normalized in self.moderator_usernames:
+                return True
+        return False
 
     def target_chat_id(self) -> int:
         """Куда публиковать задачи."""

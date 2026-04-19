@@ -218,6 +218,42 @@ async def _lookup_record_id_by_telegram(table: str, username: str) -> str | None
     return None
 
 
+async def fetch_all_team_telegrams() -> set[str]:
+    """Вернуть множество нормализованных (lowercase, без `@`) значений поля
+    «Телеграм» из всех записей таблицы «Команда». Используется для
+    наполнения cfg.moderator_usernames на старте бота и в периодическом
+    обновлении кэша (каждые 5 мин). Пагинация учтена — берём все страницы.
+    """
+    result: set[str] = set()
+    offset: str | None = None
+    async with aiohttp.ClientSession() as session:
+        while True:
+            await _rate_limit()
+            params = {"pageSize": "100"}
+            if offset:
+                params["offset"] = offset
+            try:
+                async with session.get(
+                    _BASE + f"/{cfg.airtable_base_id}/{quote('Команда', safe='')}",
+                    headers=_headers(),
+                    params=params,
+                ) as resp:
+                    data = await _handle(resp)
+                    if not data:
+                        break
+                    for rec in data.get("records", []):
+                        tg = rec.get("fields", {}).get("Телеграм")
+                        if isinstance(tg, str) and tg.strip():
+                            result.add(tg.strip().lstrip("@").lower())
+                    offset = data.get("offset")
+                    if not offset:
+                        break
+            except Exception as e:
+                logger.warning("fetch_all_team_telegrams failed: %s", e)
+                break
+    return result
+
+
 async def get_assistant_record_id(username: str | None) -> str | None:
     """Публичная обёртка: record_id исполнителя по полю Телеграм в таблице
     «Исполнители». Используется в on_reaction (проверка права на взятие) и

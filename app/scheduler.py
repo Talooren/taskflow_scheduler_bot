@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from aiogram import Bot
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from app import cache, db
+from app import airtable, cache, db
 from app.config import cfg
 from app.keyboards import stale_notification_kb
 
@@ -168,6 +168,17 @@ async def check_pending_moderation() -> None:
         )
 
 
+async def refresh_moderators() -> None:
+    """Обновляет cfg.moderator_usernames из таблицы «Команда» Airtable.
+    Позволяет добавлять/удалять модераторов без рестарта бота."""
+    try:
+        fresh = await airtable.fetch_all_team_telegrams()
+        cfg.moderator_usernames = fresh
+        logger.info("[scheduler] moderator_usernames refreshed: %d", len(fresh))
+    except Exception as e:
+        logger.warning("[scheduler] refresh_moderators failed: %s", e)
+
+
 def setup(bot: Bot) -> None:
     global _bot
     _bot = bot
@@ -180,5 +191,15 @@ def setup(bot: Bot) -> None:
         id="pending_moderation",
         replace_existing=True,
     )
+    scheduler.add_job(
+        refresh_moderators,
+        "interval",
+        minutes=5,
+        id="mod_refresh",
+        replace_existing=True,
+    )
     scheduler.start()
-    logger.info("[scheduler] Запущен: check_stale=1min, check_pending_moderation=5min")
+    logger.info(
+        "[scheduler] Запущен: check_stale=1min, check_pending_moderation=5min, "
+        "refresh_moderators=5min"
+    )

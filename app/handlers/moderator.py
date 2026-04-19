@@ -79,9 +79,17 @@ INFO_TEXT = (
     "таблицу</b>. Если незарегистрированный пользователь поставит реакцию на "
     "задачу, она <u>не будет ему назначена</u>: бот напишет ему в ЛС инструкцию, "
     "а сюда прилетит предупреждение с упоминанием username.\n\n"
-    "Аналогично для модераторов: чтобы при «✅ Принять» в Airtable заполнилось "
-    "поле <b>Модератор</b>, модератор должен быть в таблице <b>«Команда»</b>. "
-    "Доступ к самой панели даётся через <code>MODERATOR_IDS</code> в .env на сервере.\n\n"
+    "Аналогично для модераторов: <b>доступ к самой этой панели</b> и к "
+    "командам <code>/панель</code>, <code>✅ Принять</code>, <code>❌ Не принять</code>, "
+    "<code>🔁 Опубликовать повторно</code> и т.д. даётся тому, кто есть в таблице "
+    "<b>«Команда»</b> Airtable (поле <b>Телеграм</b> = его TG username, с @ или без). "
+    "Список модераторов подтягивается из Airtable при старте бота и обновляется "
+    "каждые 5 минут — добавил/убрал в таблице, изменения применятся автоматически, "
+    "рестарт не нужен. При «✅ Принять» этот же username подставляется в поле "
+    "<b>Модератор</b> в Итерации.\n\n"
+    "В .env сервера есть ещё <code>MODERATOR_IDS</code> — это break-glass / "
+    "owner-доступ по Telegram user_id: такие юзеры остаются модераторами "
+    "независимо от Airtable (на случай если Airtable лёг).\n\n"
     "<b>🔐 Про случайных гостей группы</b>\n"
     "Telegram-API не умеет фильтровать, кто ставит реакции — мы компенсируем это "
     "whitelist'ом «Исполнители». Дополнительно: <b>держите рабочую группу закрытой</b> "
@@ -126,7 +134,7 @@ def _clean_task_name(fields: dict) -> str:
 
 @router.message(Command("панель", "panel"))
 async def cmd_panel(message: Message) -> None:
-    if not cfg.is_moderator(message.from_user.id):
+    if not cfg.is_moderator(message.from_user):
         await message.answer("Нет прав.")
         return
     enabled = await db.is_publishing_enabled()
@@ -153,14 +161,14 @@ async def _refresh_reply_kb(message: Message) -> None:
 
 @router.message(F.text == BTN_INFO)
 async def on_info_text(message: Message) -> None:
-    if not cfg.is_moderator(message.from_user.id):
+    if not cfg.is_moderator(message.from_user):
         return
     await message.answer(INFO_TEXT, parse_mode="HTML")
 
 
 @router.message(F.text == BTN_LOAD)
 async def on_load_text(message: Message) -> None:
-    if not cfg.is_moderator(message.from_user.id):
+    if not cfg.is_moderator(message.from_user):
         return
     await cache.set_awaiting_task_count(message.from_user.id)
     await message.answer("Сколько задач загрузить? Введите число:")
@@ -168,7 +176,7 @@ async def on_load_text(message: Message) -> None:
 
 @router.message(F.text == BTN_CLEAR)
 async def on_clear_text(message: Message) -> None:
-    if not cfg.is_moderator(message.from_user.id):
+    if not cfg.is_moderator(message.from_user):
         return
     deleted = await db.delete_tasks_loaded()
     await message.answer(
@@ -179,7 +187,7 @@ async def on_clear_text(message: Message) -> None:
 
 @router.message(F.text == BTN_REFRESH)
 async def on_refresh_text(message: Message) -> None:
-    if not cfg.is_moderator(message.from_user.id):
+    if not cfg.is_moderator(message.from_user):
         return
     loaded = await db.get_tasks_loaded()
     refreshed = 0
@@ -202,7 +210,7 @@ async def on_refresh_text(message: Message) -> None:
 
 @router.message(F.text.in_({BTN_PUB_ON, BTN_PUB_OFF}))
 async def on_toggle_pub_text(message: Message) -> None:
-    if not cfg.is_moderator(message.from_user.id):
+    if not cfg.is_moderator(message.from_user):
         return
     new_value = not await db.is_publishing_enabled()
     await db.set_publishing(new_value)
@@ -212,7 +220,7 @@ async def on_toggle_pub_text(message: Message) -> None:
 
 @router.callback_query(lambda c: c.data == "toggle_publishing")
 async def on_toggle_publishing(callback: CallbackQuery) -> None:
-    if not cfg.is_moderator(callback.from_user.id):
+    if not cfg.is_moderator(callback.from_user):
         await callback.answer("Нет прав.", show_alert=True)
         return
     new_value = not await db.is_publishing_enabled()
@@ -231,7 +239,7 @@ async def on_toggle_publishing(callback: CallbackQuery) -> None:
 
 @router.callback_query(lambda c: c.data in ("load_tasks", "clear_queue", "refresh_schedule"))
 async def on_panel_action(callback: CallbackQuery) -> None:
-    if not cfg.is_moderator(callback.from_user.id):
+    if not cfg.is_moderator(callback.from_user):
         await callback.answer("Нет прав.", show_alert=True)
         return
 
@@ -411,7 +419,7 @@ async def _handle_reject_reason_input(message: Message, bot: Bot, reason_key: st
 
 @router.callback_query(lambda c: c.data and c.data.startswith("publish_"))
 async def on_publish(callback: CallbackQuery, bot: Bot) -> None:
-    if not cfg.is_moderator(callback.from_user.id):
+    if not cfg.is_moderator(callback.from_user):
         await callback.answer("Нет прав.", show_alert=True)
         return
 
@@ -489,7 +497,7 @@ async def on_take_test(callback: CallbackQuery, bot: Bot) -> None:
 
 @router.callback_query(lambda c: c.data and c.data.startswith("accept_"))
 async def on_accept(callback: CallbackQuery, bot: Bot) -> None:
-    if not cfg.is_moderator(callback.from_user.id):
+    if not cfg.is_moderator(callback.from_user):
         await callback.answer("Нет прав.", show_alert=True)
         return
 
@@ -551,7 +559,7 @@ async def on_accept(callback: CallbackQuery, bot: Bot) -> None:
 
 @router.callback_query(lambda c: c.data and c.data.startswith("reject_"))
 async def on_reject(callback: CallbackQuery) -> None:
-    if not cfg.is_moderator(callback.from_user.id):
+    if not cfg.is_moderator(callback.from_user):
         await callback.answer("Нет прав.", show_alert=True)
         return
 
@@ -575,7 +583,7 @@ async def on_reject(callback: CallbackQuery) -> None:
 
 @router.callback_query(lambda c: c.data and c.data.startswith("restale_"))
 async def on_restale(callback: CallbackQuery, bot: Bot) -> None:
-    if not cfg.is_moderator(callback.from_user.id):
+    if not cfg.is_moderator(callback.from_user):
         await callback.answer("Нет прав.", show_alert=True)
         return
 
@@ -629,7 +637,7 @@ async def on_restale(callback: CallbackQuery, bot: Bot) -> None:
 
 @router.callback_query(lambda c: c.data and c.data.startswith("skip_stale_"))
 async def on_skip_stale(callback: CallbackQuery) -> None:
-    if not cfg.is_moderator(callback.from_user.id):
+    if not cfg.is_moderator(callback.from_user):
         await callback.answer("Нет прав.", show_alert=True)
         return
 

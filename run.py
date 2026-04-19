@@ -15,7 +15,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 
 from app.config import cfg
-from app import db
+from app import airtable, db
 from app import cache
 from app.scheduler import setup as setup_scheduler
 from app.handlers import router
@@ -55,6 +55,20 @@ async def main() -> None:
             warmed += 1
     if warmed:
         logger.info("Прогрет кэш результатов: %s записей", warmed)
+
+    # Загружаем список модераторов из таблицы «Команда» Airtable.
+    # Обновлять будет scheduler раз в 5 минут.
+    try:
+        cfg.moderator_usernames = await airtable.fetch_all_team_telegrams()
+        logger.info(
+            "Модераторы: %d из Airtable «Команда» + %d из MODERATOR_IDS (break-glass)",
+            len(cfg.moderator_usernames), len(cfg.moderator_ids),
+        )
+    except Exception as e:
+        logger.error(
+            "Не удалось загрузить модераторов из Airtable: %s. "
+            "Доступна только MODERATOR_IDS как fallback.", e,
+        )
 
     # Bot и Dispatcher
     # parse_mode по дефолту не задаём — многие служебные сообщения содержат

@@ -21,11 +21,10 @@ async def _con_fetch(query: str) -> int:
 
 @router.message(Command("start"))
 async def cmd_start(message: Message) -> None:
-    user_id = message.from_user.id
     username = message.from_user.username
 
     # 1. Модератор — приветствие с клавиатурой управления
-    if cfg.is_moderator(user_id):
+    if cfg.is_moderator(message.from_user):
         enabled = await db.is_publishing_enabled()
         await message.answer(
             "🛠 <b>Панель модератора TaskFlow</b>\n\n"
