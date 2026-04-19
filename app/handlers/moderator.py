@@ -81,6 +81,16 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 
+def _strip_md_bold(text: str | None) -> str:
+    """Убирает markdown-маркеры `**...**` из текста. Авторы задач в Airtable
+    пишут заголовки жирным через `**Название:**`, но у нас отправка plain-text
+    (MarkdownV2 ломается на '.', '-', '(', ')' и прочем) — проще выгрести
+    звёздочки, чем экранировать всё подряд."""
+    if not text:
+        return ""
+    return text.replace("**", "")
+
+
 def _clean_task_name(fields: dict) -> str:
     """Получить человекочитаемое название из Airtable-полей.
 
@@ -327,8 +337,8 @@ async def _handle_task_count_input(message: Message) -> None:
     for task in loaded:
         task_preview = (
             f"📋 Задача #{task['task_number']}\n"
-            f"{task['task_name']}\n\n"
-            f"{task['task_text']}"
+            f"{_strip_md_bold(task['task_name'])}\n\n"
+            f"{_strip_md_bold(task['task_text'])}"
         )
         # Карточка после загрузки — решение принимает модератор, поэтому
         # кнопка «Опубликовать» показывается в обоих режимах. В TEST_MODE
@@ -403,7 +413,7 @@ async def on_publish(callback: CallbackQuery, bot: Bot) -> None:
 
     chat_id = cfg.target_chat_id()
     prefix = cfg.test_prefix()
-    text = prefix + task["task_text"]
+    text = prefix + _strip_md_bold(task["task_text"])
     kb = build_publish_keyboard(record_id, cfg.test_mode)
 
     try:
@@ -574,7 +584,7 @@ async def on_restale(callback: CallbackQuery, bot: Bot) -> None:
     # Публикуем заново
     chat_id = cfg.target_chat_id()
     prefix = cfg.test_prefix()
-    text = prefix + task["task_text"]
+    text = prefix + _strip_md_bold(task["task_text"])
     kb = build_publish_keyboard(record_id, cfg.test_mode)
 
     try:
