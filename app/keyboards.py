@@ -1,4 +1,41 @@
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
+)
+
+
+# Метки reply-кнопок панели модератора. Совпадают с сравнением в text-хэндлерах —
+# при изменении править и здесь, и в moderator.py одновременно.
+BTN_LOAD     = "📥 Загрузить задачи"
+BTN_CLEAR    = "🛑 Очистить очередь"
+BTN_REFRESH  = "🔄 Обновить расписание"
+BTN_PUB_ON   = "🟢 Публикация: ВКЛ"
+BTN_PUB_OFF  = "🔴 Публикация: ВЫКЛ"
+BTN_INFO     = "ℹ️ Информация"
+
+
+def moderator_reply_kb(publishing_enabled: bool) -> ReplyKeyboardMarkup:
+    """Постоянная клавиатура внизу экрана для модератора (persistent reply).
+    Пользователь видит её сразу после /start или /панель и может нажимать
+    вместо команд. Тумблер публикации меняет надпись по состоянию флага."""
+    toggle = BTN_PUB_ON if publishing_enabled else BTN_PUB_OFF
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=BTN_LOAD), KeyboardButton(text=BTN_CLEAR)],
+            [KeyboardButton(text=BTN_REFRESH), KeyboardButton(text=toggle)],
+            [KeyboardButton(text=BTN_INFO)],
+        ],
+        resize_keyboard=True,
+        is_persistent=True,
+    )
+
+
+def remove_reply_kb() -> ReplyKeyboardRemove:
+    """Убрать reply-клавиатуру у пользователя (например, если он больше не модератор)."""
+    return ReplyKeyboardRemove()
 
 
 def moderator_panel_kb(publishing_enabled: bool = False) -> InlineKeyboardMarkup:

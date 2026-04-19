@@ -6,6 +6,7 @@ from aiogram.types import Message
 
 from app import db
 from app.config import cfg
+from app.keyboards import moderator_reply_kb
 
 router = Router()
 
@@ -20,11 +21,16 @@ async def _con_fetch(query: str) -> int:
 
 @router.message(Command("start"))
 async def cmd_start(message: Message) -> None:
+    is_mod = cfg.is_moderator(message.from_user.id)
     mod_hint = (
-        "\n\nВы модератор: /панель — управление публикацией"
-        if cfg.is_moderator(message.from_user.id)
-        else ""
+        "\n\nВы модератор: панель ниже — управление публикацией.\n"
+        "Нажмите <b>ℹ️ Информация</b> для описания кнопок."
+        if is_mod else ""
     )
+    kwargs = {"parse_mode": "HTML"}
+    if is_mod:
+        enabled = await db.is_publishing_enabled()
+        kwargs["reply_markup"] = moderator_reply_kb(enabled)
     await message.answer(
         f"<b>TaskFlow Bot</b>\n\n"
         f"Бот публикует задачи в группу по расписанию.\n\n"
@@ -32,7 +38,7 @@ async def cmd_start(message: Message) -> None:
         f"• Результат отправьте мне в личные сообщения.\n\n"
         f"/status — посмотреть текущую задачу"
         f"{mod_hint}",
-        parse_mode="HTML",
+        **kwargs,
     )
 
 

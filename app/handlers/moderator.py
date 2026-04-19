@@ -13,20 +13,64 @@ from __future__ import annotations
 
 import logging
 
-from aiogram import Bot, Router
+from aiogram import Bot, F, Router
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, Message
 
 from app import airtable, cache, db
 from app.config import cfg
 from app.keyboards import (
+    BTN_CLEAR,
+    BTN_INFO,
+    BTN_LOAD,
+    BTN_PUB_OFF,
+    BTN_PUB_ON,
+    BTN_REFRESH,
     accept_reject_kb,
     build_publish_keyboard,
     moderator_panel_kb,
+    moderator_reply_kb,
     publish_task_kb,
     stale_notification_kb,
 )
 from app.utils import utc_now_iso
+
+
+INFO_TEXT = (
+    "ℹ️ <b>Как работает бот и что делает каждая кнопка</b>\n\n"
+    "<b>📥 Загрузить задачи</b>\n"
+    "Загружает из Airtable записи со статусом «Очередь» (сколько — ты вводишь числом). "
+    "На каждую задачу приходит карточка с кнопкой «✅ Опубликовать». "
+    "Если задача раньше была завершена и её вернули в Очередь — она «перезальётся» заново, "
+    "но активные (в работе у исполнителя) не трогаются.\n\n"
+    "<b>🛑 Очистить очередь</b>\n"
+    "Удаляет все загруженные, но ещё не опубликованные задачи. "
+    "Задачи, которые уже опубликованы или взяты — не трогаются.\n\n"
+    "<b>🔄 Обновить расписание</b>\n"
+    "Подтягивает из Airtable свежие данные для уже загруженных задач "
+    "(название, текст, режим, лимит). Удобно, если после загрузки что-то поправили в Airtable.\n\n"
+    "<b>🟢 Публикация: ВКЛ / 🔴 Публикация: ВЫКЛ</b>\n"
+    "Глобальный тумблер. Когда выключен, кнопка «✅ Опубликовать» отвечает "
+    "«Публикация выключена глобально» и не отправляет задачу. "
+    "Заблокирован и повторный «Опубликовать» из уведомления о простое.\n\n"
+    "<b>🔁 Карточка задачи → «✅ Опубликовать»</b>\n"
+    "Отправляет задачу в группу ассистентов. Исполнитель берёт её <b>реакцией</b> "
+    "на сообщение (первый поставивший = исполнитель). "
+    "В Airtable ставится Статус = «В работе», Время начала, Исполнитель (ссылка на запись).\n\n"
+    "<b>📨 Принять / Не принять</b>\n"
+    "Когда исполнитель пришлёт результат в ЛС боту, в группу модераторов прилетит карточка "
+    "с кнопками:\n"
+    "• <b>✅ Принять</b> — Статус → «Завершено», Время окончания, Результат, Модератор = ты.\n"
+    "• <b>❌ Не принимать</b> — бот спросит причину, отправит её исполнителю в ЛС; "
+    "задача остаётся в работе, исполнитель присылает доработку.\n\n"
+    "<b>⏰ Уведомления планировщика</b>\n"
+    "• Через 30 минут после публикации без взятия — уведомление с кнопкой "
+    "«🔁 Опубликовать повторно».\n"
+    "• Через 4 / 12 / 24 часа после получения результата — напоминание модератору.\n\n"
+    "<b>/start</b> — это меню.\n"
+    "<b>/панель</b> — показать клавиатуру ещё раз (если свернули).\n"
+    "<b>/status</b> — показать активную задачу, если ты её брал как исполнитель."
+)
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -58,9 +102,83 @@ async def cmd_panel(message: Message) -> None:
         return
     enabled = await db.is_publishing_enabled()
     await message.answer(
-        "Панель модератора",
-        reply_markup=moderator_panel_kb(enabled),
+        "Панель модератора. Нажмите кнопку снизу.",
+        reply_markup=moderator_reply_kb(enabled),
     )
+
+
+async def _refresh_reply_kb(message: Message) -> None:
+    """Перерисовать клавиатуру внизу (с актуальным статусом тумблера).
+    Telegram не поддерживает редактирование reply-клавиатуры —
+    отправляем короткое служебное сообщение с новой раскладкой."""
+    enabled = await db.is_publishing_enabled()
+    await message.answer(
+        "🟢 Публикация ВКЛЮЧЕНА" if enabled else "🔴 Публикация ВЫКЛЮЧЕНА",
+        reply_markup=moderator_reply_kb(enabled),
+    )
+
+
+# ── Text-хэндлеры для кнопок reply-клавиатуры ─────────────────────────────────
+# ВАЖНО: эти хэндлеры должны идти ДО _awaiting_moderator_input, иначе ввод
+# текста кнопки будет интерпретирован как ответ на запрос «сколько задач?».
+
+@router.message(F.text == BTN_INFO)
+async def on_info_text(message: Message) -> None:
+    if not cfg.is_moderator(message.from_user.id):
+        return
+    await message.answer(INFO_TEXT, parse_mode="HTML")
+
+
+@router.message(F.text == BTN_LOAD)
+async def on_load_text(message: Message) -> None:
+    if not cfg.is_moderator(message.from_user.id):
+        return
+    await cache.set_awaiting_task_count(message.from_user.id)
+    await message.answer("Сколько задач загрузить? Введите число:")
+
+
+@router.message(F.text == BTN_CLEAR)
+async def on_clear_text(message: Message) -> None:
+    if not cfg.is_moderator(message.from_user.id):
+        return
+    deleted = await db.delete_tasks_loaded()
+    await message.answer(
+        f"Очередь задач очищена. Удалено задач: {deleted}.\n"
+        f"Задачи в работе не затронуты."
+    )
+
+
+@router.message(F.text == BTN_REFRESH)
+async def on_refresh_text(message: Message) -> None:
+    if not cfg.is_moderator(message.from_user.id):
+        return
+    loaded = await db.get_tasks_loaded()
+    refreshed = 0
+    for task in loaded:
+        record = await airtable.fetch_record(task["record_id"])
+        if record:
+            fields = record.get("fields", {})
+            await db.update_task_fields(
+                task["record_id"],
+                {
+                    "task_name": _clean_task_name(fields) or task["task_name"],
+                    "task_text": fields.get("Для отправки", task["task_text"]),
+                    "mode": fields.get("Режим"),
+                    "limit_hours": fields.get("Лимит (час)", task["limit_hours"]),
+                },
+            )
+            refreshed += 1
+    await message.answer(f"Расписание обновлено. Обновлено задач: {refreshed}")
+
+
+@router.message(F.text.in_({BTN_PUB_ON, BTN_PUB_OFF}))
+async def on_toggle_pub_text(message: Message) -> None:
+    if not cfg.is_moderator(message.from_user.id):
+        return
+    new_value = not await db.is_publishing_enabled()
+    await db.set_publishing(new_value)
+    await _refresh_reply_kb(message)
+    logger.info("[moderator] publishing_enabled -> %s (via reply-kb)", new_value)
 
 
 @router.callback_query(lambda c: c.data == "toggle_publishing")
