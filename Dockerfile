@@ -14,6 +14,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY --chown=app:app . .
 
+# WORKDIR /app создаётся как root:root; run.py делает Path("logs").mkdir() в cwd,
+# поэтому отдаём /app и подпапки пользователю app.
+RUN mkdir -p /app/logs /app/data && chown -R app:app /app
+
 USER app
 
 CMD ["python", "run.py"]
