@@ -21,11 +21,15 @@ _bot: Bot | None = None
 
 STALE_MINUTES = 30
 
-# SR-3: три уровня напоминаний модератору о непринятом результате.
+# Уровни напоминаний модератору о непринятом результате (label, threshold_sec).
+# Значения должны быть упорядочены по возрастанию. Label используется в ключе
+# Redis-дедупа (moderation_reminder:{record_id}:{label}).
 _MODERATION_TIERS: tuple[tuple[str, float], ...] = (
-    ("4h", 4 * 3600),
-    ("12h", 12 * 3600),
-    ("24h", 24 * 3600),
+    ("15m",  15 * 60),
+    ("30m",  30 * 60),
+    ("45m",  45 * 60),
+    ("1h",   60 * 60),
+    ("2h",  120 * 60),
 )
 
 
@@ -98,10 +102,21 @@ async def check_stale_force() -> None:
         logger.info("[stale force] Уведомление отправлено для %s", record_id)
 
 
+def _format_elapsed(seconds: float) -> str:
+    """Человекочитаемое время: 'Xм', 'Yч', 'Yч Xм'."""
+    total_min = int(seconds // 60)
+    h, m = divmod(total_min, 60)
+    if h and m:
+        return f"{h}ч {m}мин"
+    if h:
+        return f"{h}ч"
+    return f"{m}мин"
+
+
 async def check_pending_moderation() -> None:
-    """SR-3: каждые 10 минут ищем результаты, которые модератор не принял/
-    не отклонил через 4/12/24 часа после получения, и шлём напоминание.
-    Дедуп через Redis: по ключу на (record_id, tier), TTL 48ч."""
+    """Каждые 5 минут ищем результаты, которые модератор не принял/не отклонил,
+    и шлём напоминание при переходе через 15/30/45 мин / 1 ч / 2 ч после
+    получения результата. Дедуп через Redis: по ключу (record_id, tier), TTL 48ч."""
     records = await db.list_pending_with_result()
     if not records:
         return
@@ -127,10 +142,10 @@ async def check_pending_moderation() -> None:
         if not tier_to_send:
             continue
 
-        hours_elapsed = int(elapsed // 3600)
+        elapsed_str = _format_elapsed(elapsed)
         text = (
             f"⌛ Напоминание: задача #{rec.get('task_number')} — {rec.get('task_name')}\n"
-            f"ждёт модерации уже {hours_elapsed} ч.\n"
+            f"ждёт модерации уже {elapsed_str}.\n"
             f"Исполнитель: @{rec.get('username')}"
         )
 
@@ -148,8 +163,8 @@ async def check_pending_moderation() -> None:
 
         await cache.set_moderation_reminder_sent(record_id, tier_to_send)
         logger.info(
-            "[moderation] Напоминание %s отправлено (tier=%s, elapsed≈%dч)",
-            record_id, threshold_label, hours_elapsed,
+            "[moderation] Напоминание %s отправлено (tier=%s, elapsed≈%s)",
+            record_id, threshold_label, elapsed_str,
         )
 
 
@@ -161,9 +176,9 @@ def setup(bot: Bot) -> None:
     scheduler.add_job(
         check_pending_moderation,
         "interval",
-        minutes=10,
+        minutes=5,
         id="pending_moderation",
         replace_existing=True,
     )
     scheduler.start()
-    logger.info("[scheduler] Запущен: check_stale=1min, check_pending_moderation=10min")
+    logger.info("[scheduler] Запущен: check_stale=1min, check_pending_moderation=5min")
