@@ -1,0 +1,6 @@
+aiogram>=3.7,<4
+aiohttp>=3.9,<4
+python-dotenv>=1.0
+APScheduler>=3.10,<4
+asyncpg>=0.29,<1
+redis[hiredis]>=5.0,<6

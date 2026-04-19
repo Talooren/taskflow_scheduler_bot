@@ -1,0 +1,50 @@
+# ── secrets ───────────────────────────────────────────────────────────────────
+.env
+.env.*.local
+*.env.local
+Токен для Mod.txt
+
+# ── runtime data ──────────────────────────────────────────────────────────────
+data/
+logs/
+*.db
+*.sqlite
+*.sqlite3
+*.sqlite3-journal
+
+# ── python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ── venvs ─────────────────────────────────────────────────────────────────────
+venv/
+.venv/
+env/
+ENV/
+
+# ── IDE / editors ─────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ── agent/tooling caches ──────────────────────────────────────────────────────
+.claude/
+.qwen/
+
+# ── deployment recon artifacts (содержат IP/пути VPS — не обязаны быть в репо) ─
+# Раскомментируй, если хочешь держать их приватными вне репо.
+# DEPLOY_RECON.md
+# DEPLOY_NOTES.md

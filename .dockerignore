@@ -1,0 +1,24 @@
+venv/
+.venv/
+__pycache__/
+*.pyc
+.env
+data/
+logs/
+*.db
+*.sqlite
+*.sqlite3
+.git/
+.idea/
+.vscode/
+AUDIT_REPORT.md
+DEPLOY_RECON.md
+DEPLOY_NOTES.md
+TODO.md
+taskflow_v2_*.md
+Dockerfile
+docker-compose.yml
+.dockerignore
+.deploy_*.py
+.deploy_*.out
+Токен для Mod.txt
