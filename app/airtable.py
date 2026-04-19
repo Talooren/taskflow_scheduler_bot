@@ -182,14 +182,63 @@ async def patch_record(record_id: str, fields: dict) -> dict | None:
 
 # ── Удобные обёртки ────────────────────────────────────────────────────────────
 
+async def _lookup_record_id_by_telegram(table: str, username: str) -> str | None:
+    """Найти record_id в таблице по полю `Телеграм` (case-insensitive).
+
+    Толерантен к обоим форматам: ищет и `handle`, и `@handle`, т.к. в
+    одних таблицах пишут с `@`, в других — без. Возвращает None если не
+    найден — вызывающий код должен принять это как «не к чему привязывать»
+    и просто не писать соответствующее поле.
+    """
+    if not username:
+        return None
+    bare = username.lstrip("@")
+    with_at = f"@{bare}"
+    # filterByFormula: матчит оба варианта написания, регистронезависимо
+    formula = (
+        f"OR(LOWER({{Телеграм}})=LOWER('{bare}'),"
+        f"LOWER({{Телеграм}})=LOWER('{with_at}'))"
+    )
+    await _rate_limit()
+    async with aiohttp.ClientSession() as session:
+        try:
+            table_url = f"{_BASE}/{cfg.airtable_base_id}/{quote(table, safe='')}"
+            async with session.get(
+                table_url,
+                headers=_headers(),
+                params={"filterByFormula": formula, "maxRecords": "1"},
+            ) as resp:
+                data = await _handle(resp)
+                records = (data or {}).get("records", [])
+                if records:
+                    return records[0].get("id")
+        except Exception as e:
+            logger.warning("Airtable lookup %s?Телеграм=%s failed: %s", table, with_at, e)
+    logger.info("Airtable lookup: %s с Телеграм=%s/%s не найден", table, bare, with_at)
+    return None
+
+
 async def set_assignee(record_id: str, username: str, start_time_utc: str) -> bool:
-    result = await patch_record(record_id, {
+    fields: dict = {
         "Статус": "В работе",
-        "Исполнитель ТГ": f"@{username}" if not username.startswith("@") else username,
         "Время начала": start_time_utc,
-    })
+    }
+    # Ищем запись исполнителя в таблице «Исполнители» по Телеграм
+    assignee_id = await _lookup_record_id_by_telegram("Исполнители", username)
+    if assignee_id:
+        fields["Исполнитель"] = [assignee_id]
+    else:
+        logger.warning(
+            "set_assignee(%s): исполнитель @%s не найден в таблице «Исполнители», "
+            "поле оставлено пустым",
+            record_id, username,
+        )
+    result = await patch_record(record_id, fields)
     if result:
-        logger.info("Airtable: %s -> В работе, исполнитель=%s", record_id, username)
+        logger.info(
+            "Airtable: %s -> В работе, исполнитель=@%s (rec=%s)",
+            record_id, username, assignee_id,
+        )
     return result is not None
 
 
@@ -198,6 +247,7 @@ async def set_result_done(
     result_text: str,
     end_time_utc: str,
     mode: str | None,
+    moderator_username: str | None = None,
 ) -> bool:
     fields: dict = {
         "Статус": "Завершено",
@@ -207,6 +257,20 @@ async def set_result_done(
         fields["Результат проверки"] = result_text
     else:
         fields["Результат"] = result_text
+
+    # Поле «Модератор» в таблице «Итерация» ссылается именно на таблицу «Команда»
+    # (multipleRecordLinks → Команда). Если положить record_id из другой таблицы,
+    # Airtable вернёт 422. Поэтому ищем только там.
+    if moderator_username:
+        mod_id = await _lookup_record_id_by_telegram("Команда", moderator_username)
+        if mod_id:
+            fields["Модератор"] = [mod_id]
+        else:
+            logger.warning(
+                "set_result_done(%s): модератор @%s не найден в «Команда», "
+                "поле Модератор не будет записано. Заведите пользователя в таблице «Команда».",
+                record_id, moderator_username,
+            )
 
     result = await patch_record(record_id, fields)
     if result:

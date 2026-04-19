@@ -350,9 +350,13 @@ async def on_accept(callback: CallbackQuery, bot: Bot) -> None:
         stored = await db.get_pending_result_by_record(record_id)
         result_text = (stored or {}).get("result_content") or ""
 
-    # Обновляем Airtable
+    # Обновляем Airtable. Проставляем модератора, который нажал «Принять»
+    # (callback.from_user.username) — Airtable делает lookup в «Команда».
     end_time = utc_now_iso()
-    await airtable.set_result_done(record_id, result_text, end_time, task.get("mode"))
+    moderator_username = callback.from_user.username or callback.from_user.first_name
+    await airtable.set_result_done(
+        record_id, result_text, end_time, task.get("mode"), moderator_username,
+    )
 
     # Обновляем БД
     await db.update_task_done(record_id)
