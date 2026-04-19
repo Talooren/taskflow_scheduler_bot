@@ -111,13 +111,24 @@ async def on_panel_action(callback: CallbackQuery) -> None:
 
 # ── Ввод количества задач (FSM через Redis) ────────────────────────────────────
 
-@router.message(lambda m: not (m.text or "").startswith("/"))
+async def _awaiting_moderator_input(message: Message) -> bool:
+    """Фильтр хэндлера: срабатывает только когда модератор реально
+    сейчас вводит ответ на запрос бота (количество задач или причина
+    отказа). Иначе — пропускаем, чтобы сообщение долетело до
+    executor.handle_private (сдача результата исполнителем).
+    """
+    if not message.text or message.text.startswith("/"):
+        return False
+    user_id = message.from_user.id
+    if await cache.get_awaiting_task_count(user_id):
+        return True
+    if await cache.get_awaiting_reject_reason(user_id):
+        return True
+    return False
+
+
+@router.message(_awaiting_moderator_input)
 async def handle_task_count_or_reject_reason(message: Message, bot: Bot) -> None:
-    # Для ЛС исполнителя приходят фото/видео/документы без .text — тихо выходим:
-    # результаты обрабатывает executor.handle_private, а здесь только ввод
-    # количества или причины отказа (оба — текст).
-    if not message.text:
-        return
     user_id = message.from_user.id
 
     # 1. Проверяем awaiting_task_count
