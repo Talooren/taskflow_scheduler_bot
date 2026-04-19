@@ -4,7 +4,7 @@ from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
 
-from app import db
+from app import airtable, db
 from app.config import cfg
 from app.keyboards import moderator_reply_kb
 
@@ -21,25 +21,59 @@ async def _con_fetch(query: str) -> int:
 
 @router.message(Command("start"))
 async def cmd_start(message: Message) -> None:
-    is_mod = cfg.is_moderator(message.from_user.id)
-    mod_hint = (
-        "\n\nВы модератор: панель ниже — управление публикацией.\n"
-        "Нажмите <b>ℹ️ Информация</b> для описания кнопок."
-        if is_mod else ""
-    )
-    kwargs = {"parse_mode": "HTML"}
-    if is_mod:
+    user_id = message.from_user.id
+    username = message.from_user.username
+
+    # 1. Модератор — приветствие с клавиатурой управления
+    if cfg.is_moderator(user_id):
         enabled = await db.is_publishing_enabled()
-        kwargs["reply_markup"] = moderator_reply_kb(enabled)
-    await message.answer(
-        f"<b>TaskFlow Bot</b>\n\n"
-        f"Бот публикует задачи в группу по расписанию.\n\n"
-        f"• Поставьте реакцию на задачу в группе, чтобы взять её.\n"
-        f"• Результат отправьте мне в личные сообщения.\n\n"
-        f"/status — посмотреть текущую задачу"
-        f"{mod_hint}",
-        **kwargs,
-    )
+        await message.answer(
+            "🛠 <b>Панель модератора TaskFlow</b>\n\n"
+            "Управление публикацией задач — кнопки снизу.\n"
+            "Нажми <b>ℹ️ Информация</b>, чтобы посмотреть, что делает каждая кнопка.\n\n"
+            "Ещё пригодится:\n"
+            "• /панель — показать клавиатуру заново, если свернул.\n"
+            "• /status — если брал задачу как исполнитель.",
+            parse_mode="HTML",
+            reply_markup=moderator_reply_kb(enabled),
+        )
+        return
+
+    # 2. Исполнитель — проверяем по таблице «Исполнители» (Airtable)
+    is_assistant = bool(await airtable.get_assistant_record_id(username))
+
+    if is_assistant:
+        await message.answer(
+            f"👋 Привет, @{username}!\n\n"
+            f"Ты зарегистрирован(а) как исполнитель. Как работать:\n"
+            f"• В рабочей группе появляются задачи — поставь <b>реакцию</b> на "
+            f"сообщение с задачей, чтобы взять её.\n"
+            f"• Когда закончишь — пришли результат в этот чат "
+            f"(текстом, файлом, фото — как удобно).\n"
+            f"• Модератор примет результат или вернёт с комментарием.\n\n"
+            f"/status — показать задачу, которая за тобой сейчас.",
+            parse_mode="HTML",
+        )
+        return
+
+    # 3. Неизвестный — ни модератор, ни в «Исполнители»
+    if not username:
+        await message.answer(
+            "👋 Привет!\n\n"
+            "У тебя не установлен username в Telegram — пожалуйста, задай его "
+            "в настройках Telegram (Settings → Username) и напиши мне /start заново.\n\n"
+            "После этого обратись к модератору, чтобы он зарегистрировал тебя "
+            "в таблице «Исполнители».",
+        )
+    else:
+        await message.answer(
+            f"👋 Привет!\n\n"
+            f"Ты пока не зарегистрирован(а) в системе.\n\n"
+            f"Если ты новый ассистент — попроси модератора добавить тебя в таблицу "
+            f"«Исполнители» Airtable: поле «Телеграм» = <code>@{username}</code>.\n\n"
+            f"После этого сможешь брать задачи в рабочей группе реакцией.",
+            parse_mode="HTML",
+        )
 
 
 @router.message(Command("status"))

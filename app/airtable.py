@@ -218,6 +218,18 @@ async def _lookup_record_id_by_telegram(table: str, username: str) -> str | None
     return None
 
 
+async def get_assistant_record_id(username: str | None) -> str | None:
+    """Публичная обёртка: record_id исполнителя по полю Телеграм в таблице
+    «Исполнители». Используется в on_reaction (проверка права на взятие) и
+    в /start (детект роли). None — если username пустой или не найден."""
+    return await _lookup_record_id_by_telegram("Исполнители", username) if username else None
+
+
+async def get_team_record_id(username: str | None) -> str | None:
+    """Публичная обёртка: record_id члена команды по Телеграм в таблице «Команда»."""
+    return await _lookup_record_id_by_telegram("Команда", username) if username else None
+
+
 async def set_assignee(record_id: str, username: str, start_time_utc: str) -> bool:
     fields: dict = {
         "Статус": "В работе",
