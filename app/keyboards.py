@@ -136,6 +136,14 @@ def question_card_kb(question_id: str, executor_user_id: int) -> InlineKeyboardM
     ])
 
 
+def accepted_with_review_kb(record_id: str) -> InlineKeyboardMarkup:
+    """Карточка после ✅ Принять для итерации, у которой Тип проверки=Проверка
+    ассистентом и Режим=Выполнение. Одна кнопка — создать Проверка-итерацию."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📋 Отправить на проверку", callback_data=f"send_review_{record_id}")],
+    ])
+
+
 def stale_notification_kb(record_id: str) -> InlineKeyboardMarkup:
     """Кнопки для уведомления о простое."""
     return InlineKeyboardMarkup(inline_keyboard=[

@@ -472,6 +472,131 @@ async def create_question(
     return None
 
 
+async def create_review_iteration(
+    parent_record_id: str,
+    excluded_username: str | None,
+) -> dict | None:
+    """Создаёт в «Итерация» новую запись Режим=Проверка по родительской
+    Выполнение-итерации parent_record_id.
+
+    Тянет с парента: Задача (линк), Группа, Название задачи, Текст задачи.
+    Заполняет:
+      - Задача = parent.Задача (тот же линк)
+      - Режим = "Проверка"
+      - Тип проверки = "Проверка ассистентом"
+      - Группа = parent.Группа
+      - Лимит (час) = REVIEW_TIME_LIMIT_MIN / 60
+      - Для отправки = шаблон карточки (Q4: берём Задача.Текст задачи через lookup)
+      - Статус = "Очередь"
+
+    Возвращает dict с ключами:
+      - record_id: Airtable record_id новой записи
+      - group: имя группы (для последующего sync — куда публикуется)
+      - task_name: Название задачи (для локальной БД)
+      - task_text: текст для отправки (для локальной БД)
+      - excluded_username: оригинальный исполнитель (для tasks.excluded_username)
+      - parent_record_id: родительская итерация (для tasks.parent_record_id)
+    Или None при ошибке.
+    """
+    parent = await fetch_record(parent_record_id)
+    if not parent:
+        logger.warning("create_review_iteration: parent %s не найден", parent_record_id)
+        return None
+
+    pf = parent.get("fields", {})
+    task_links = pf.get("Задача") or []
+    if not isinstance(task_links, list) or not task_links:
+        logger.warning(
+            "create_review_iteration(%s): у родителя пусто поле Задача — нечего ревьюить",
+            parent_record_id,
+        )
+        return None
+
+    # Lookup-поля «Название задачи»/«Текст задачи» возвращаются как list
+    name_lu = pf.get("Название задачи")
+    if isinstance(name_lu, list) and name_lu:
+        task_name = str(name_lu[0]).strip()
+    elif isinstance(name_lu, str):
+        task_name = name_lu.strip()
+    else:
+        task_name = ""
+
+    text_lu = pf.get("Текст задачи")
+    if isinstance(text_lu, list) and text_lu:
+        task_text_orig = str(text_lu[0])
+    elif isinstance(text_lu, str):
+        task_text_orig = text_lu
+    else:
+        task_text_orig = pf.get("Для отправки", "")
+
+    group = pf.get("Группа") or cfg.publish_group_name
+    limit_hours = round(cfg.review_time_limit_min / 60.0, 4)
+
+    excl = excluded_username.lstrip("@") if excluded_username else ""
+    excl_line = f"Не может взять: @{excl}" if excl else ""
+
+    review_text = (
+        f"Проверка задачи «{task_name}»\n\n"
+        f"Сверьте результат с описанием проверяемой задачи пункт за пунктом.\n"
+        f"Результат будет отправлен в личные сообщения.\n\n"
+        f"Описание проверяемой задачи:\n"
+        f"{task_text_orig}\n\n"
+        f"{excl_line}\n"
+        f"Конечный результат: Заполненная таблица ошибок\n"
+        f"Лимит времени: {cfg.review_time_limit_min} минут\n"
+        f"Лимит доработки: {cfg.rework_limit_hours} час"
+    ).strip()
+
+    fields: dict = {
+        "Задача": task_links,
+        "Режим": "Проверка",
+        "Тип проверки": "Проверка ассистентом",
+        "Группа": group,
+        "Лимит (час)": limit_hours,
+        "Для отправки": review_text,
+        "Статус": "Очередь",
+    }
+
+    await _rate_limit()
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                _table_url(),
+                headers=_headers(),
+                json={"fields": fields},
+            ) as resp:
+                data = await _handle(resp)
+                if data and isinstance(data, dict):
+                    new_id = data.get("id")
+                    logger.info(
+                        "Airtable: создана Проверка-итерация %s (parent=%s, group=%s, "
+                        "limit=%.4fч, excluded=@%s)",
+                        new_id, parent_record_id, group, limit_hours, excl or "—",
+                    )
+                    return {
+                        "record_id": new_id,
+                        "group": group,
+                        "task_name": f"Проверка задачи «{task_name}»",
+                        "task_text": review_text,
+                        "limit_hours": limit_hours,
+                        "excluded_username": excl,
+                        "parent_record_id": parent_record_id,
+                    }
+    except Exception as e:
+        logger.error("create_review_iteration POST failed: %s", e)
+    return None
+
+
+async def fetch_parent_result(parent_record_id: str) -> str | None:
+    """Читает Результат с родительской Выполнение-итерации. Используется
+    при назначении проверяющего: ему DM-ится этот текст."""
+    parent = await fetch_record(parent_record_id)
+    if not parent:
+        return None
+    pf = parent.get("fields", {})
+    return pf.get("Результат") or None
+
+
 async def update_question_answer(question_id: str, answer_text: str) -> bool:
     """PATCH в «Вопросы»/<question_id> — пишет поле «Ответ».
     «Дата ответа» обновится автоматически (lastModifiedTime)."""

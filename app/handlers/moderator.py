@@ -25,6 +25,7 @@ from app.keyboards import (
     BTN_LOAD,
     BTN_REFRESH,
     accept_reject_kb,
+    accepted_with_review_kb,
     build_publish_keyboard,
     moderator_reply_kb,
     publish_task_kb,
@@ -79,6 +80,27 @@ INFO_TEXT = (
     "После «Отправить» исполнитель может прислать ещё сообщения — они копятся "
     "в <i>дозалив</i> с кнопкой <b>«📨 Доотправить»</b>. Когда нажмёт — форварды "
     "придут сюда же, как ответ на исходную карточку, и допишутся в результат.\n\n"
+    "<b>📋 Проверка ассистентом (двухэтапные задачи)</b>\n"
+    "Если у итерации в Airtable выставлено <b>Тип проверки = Проверка ассистентом</b>, "
+    "после нажатия <b>«✅ Принять»</b> в карточке остаётся одна кнопка "
+    "<b>«📋 Отправить на проверку»</b>. По нажатию бот:\n"
+    "• создаёт в «Итерация» новую запись (<b>Режим=Проверка</b>, "
+    "<b>Тип проверки=Проверка ассистентом</b>, та же <b>Группа</b> и <b>Задача</b>, "
+    "Лимит = REVIEW_TIME_LIMIT_MIN/60 ч). В поле <b>Для отправки</b> бот сам собирает "
+    "карточку проверки с правилами, <i>«Не может взять @username»</i>, "
+    "<i>«Конечный результат: Заполненная таблица ошибок»</i> и лимитами;\n"
+    "• грузит её в локальную БД и шлёт сюда карточку <b>«✅ Опубликовать»</b> — "
+    "дальше всё как обычно (Опубликовать → группа исполнителей);\n"
+    "• <b>исходный исполнитель</b> сохраняется в <code>excluded_username</code>: "
+    "если он попробует взять проверку реакцией — бот ему откажет в ЛС "
+    "(«это твоя задача — нельзя»). Остальные исполнители берут как обычно.\n"
+    "• <b>проверяющему</b> при взятии бот сразу присылает в ЛС "
+    "<i>«📎 Результат проверяемой задачи: …»</i> — это поле «Результат» исходной итерации.\n"
+    "Если у исходной <b>Тип проверки = Без проверки</b> или <b>Проверка Заказчиком</b> — "
+    "кнопки нет, бот ничего не создаёт, флоу остаётся одноэтапным.\n"
+    "Параметры в .env: <code>REVIEW_TIME_LIMIT_MIN</code> (по умолчанию 15 мин — "
+    "лимит на саму проверку), <code>REWORK_LIMIT_HOURS</code> (по умолчанию 1 ч — "
+    "информационная строка «Лимит доработки» в карточке).\n\n"
     "<b>❓ Вопросы исполнителя</b>\n"
     "В /status у исполнителя есть кнопка <b>«❓ Задать вопрос»</b>. Бот спрашивает "
     "текст, потом просит выбрать «🚧 Блокирующий» / «📨 Не блокирующий» и:\n"
@@ -218,6 +240,7 @@ async def on_refresh_text(message: Message) -> None:
                     "task_text": fields.get("Для отправки", task["task_text"]),
                     "mode": fields.get("Режим"),
                     "limit_hours": fields.get("Лимит (час)", task["limit_hours"]),
+                    "review_type": fields.get("Тип проверки"),
                 },
             )
             refreshed += 1
@@ -345,11 +368,13 @@ async def _handle_task_count_input(message: Message) -> None:
         task_name = _clean_task_name(fields)
         task_text = fields.get("Для отправки", "")
         mode = fields.get("Режим")
+        review_type = fields.get("Тип проверки")
         limit_raw = fields.get("Лимит (час)")
         limit_hours = float(limit_raw) if limit_raw is not None else 0
 
         result = await db.insert_task(
             record_id, task_number or 0, task_name, task_text, mode, limit_hours,
+            review_type=review_type,
         )
         if result == "inserted":
             inserted += 1
@@ -703,19 +728,113 @@ async def on_accept(callback: CallbackQuery, bot: Bot) -> None:
     except Exception as e:
         logger.warning("Не удалось уведомить исполнителя %s: %s", user_id, e)
 
-    # Редактируем карточку модератора
+    # Редактируем карточку модератора. Если итерация была Выполнение с
+    # Тип проверки=Проверка ассистентом — оставляем одну кнопку «📋 Отправить
+    # на проверку», чтобы модератор подтвердил создание Проверка-итерации.
+    show_review_btn = (
+        task.get("mode") == "Выполнение"
+        and task.get("review_type") == "Проверка ассистентом"
+    )
+    accepted_text = (
+        f"✅ Принято модератором\n\n"
+        f"Задача #{task['task_number']}: {task['task_name']}\n"
+        f"Исполнитель: @{pending['username']}"
+    )
     try:
-        await callback.message.edit_text(
-            f"✅ Принято модератором\n\n"
-            f"Задача #{task['task_number']}: {task['task_name']}\n"
-            f"Исполнитель: @{pending['username']}",
-        )
+        if show_review_btn:
+            await callback.message.edit_text(
+                accepted_text + "\n\nТип проверки: Проверка ассистентом",
+                reply_markup=accepted_with_review_kb(record_id),
+            )
+        else:
+            await callback.message.edit_text(accepted_text)
     except Exception:
         await callback.message.answer("✅ Принято")
 
     await cache.del_moderator_message_id(record_id)
     await callback.answer("Принято!")
     logger.info("[moderator] Задача %s принята", record_id)
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("send_review_"))
+async def on_send_review(callback: CallbackQuery) -> None:
+    """«📋 Отправить на проверку» — создаёт в Airtable Проверка-итерацию по
+    родительской Выполнение-итерации, грузит её в локальную БД (loaded) и шлёт
+    карточку с [✅ Опубликовать] в группу модераторов. Excluded_username =
+    исходный исполнитель — он не сможет взять проверку реакцией."""
+    if not cfg.is_moderator(callback.from_user):
+        await callback.answer("Нет прав.", show_alert=True)
+        return
+
+    parent_record_id = callback.data.split("send_review_", 1)[1]
+    parent = await db.get_task_by_record(parent_record_id)
+    if not parent:
+        await callback.answer("Родительская задача не найдена.", show_alert=True)
+        return
+
+    if parent.get("mode") != "Выполнение" or parent.get("review_type") != "Проверка ассистентом":
+        await callback.answer("Эта задача не требует Проверки ассистентом.", show_alert=True)
+        return
+
+    excluded_username = parent.get("assignee_username") or ""
+    review = await airtable.create_review_iteration(parent_record_id, excluded_username)
+    if not review:
+        await callback.answer(
+            "Не удалось создать Проверка-итерацию в Airtable. Подробности в логах.",
+            show_alert=True,
+        )
+        return
+
+    new_record_id = review["record_id"]
+    new_text = review["task_text"]
+    new_name = review["task_name"]
+    new_limit = review["limit_hours"]
+
+    # Грузим Проверка-итерацию в локальную БД как loaded.
+    # task_number оставляем 0 — он берётся из Airtable Id (autoincrement)
+    # только в режиме fetch_queue_tasks; здесь у нас record создан напрямую,
+    # без Id — модератор увидит парентский номер в карточке-родителе.
+    await db.insert_task(
+        new_record_id,
+        0,
+        new_name,
+        new_text,
+        "Проверка",
+        new_limit,
+        review_type="Проверка ассистентом",
+        excluded_username=excluded_username,
+        parent_record_id=parent_record_id,
+    )
+
+    # Шлём в группу модераторов карточку с кнопкой [✅ Опубликовать]
+    try:
+        await callback.bot.send_message(
+            cfg.moderator_group_id,
+            f"📋 Создана Проверка-итерация по задаче #{parent.get('task_number')}\n"
+            f"{_strip_md_bold(new_name)}\n\n"
+            f"Не может взять: @{excluded_username}\n\n"
+            f"{_strip_md_bold(new_text)}",
+            reply_markup=publish_task_kb(new_record_id),
+        )
+    except Exception as e:
+        logger.error("[send_review] не удалось отправить карточку модераторам: %s", e)
+        await callback.answer(
+            "Запись в Airtable создана, но карточку отправить не удалось. См. логи.",
+            show_alert=True,
+        )
+        return
+
+    # Убираем кнопку из исходной карточки «Принято»
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
+    await callback.answer("Проверка-итерация создана и отправлена модераторам")
+    logger.info(
+        "[send_review] parent=%s -> review=%s (excluded=@%s)",
+        parent_record_id, new_record_id, excluded_username or "—",
+    )
 
 
 @router.callback_query(lambda c: c.data and c.data.startswith("reject_"))
@@ -909,6 +1028,25 @@ async def _assign_user(user_id: int, username: str, record_id: str, bot: Bot) ->
         logger.warning("[assign] Задача %s не найдена в БД (user_id=%s)", record_id, user_id)
         return False
 
+    # C-group: запрет «проверять собственную работу». excluded_username
+    # — оригинальный исполнитель Выполнение-итерации, у Проверка-итерации
+    # этот username не может взять задачу. Сравниваем без @ и регистра.
+    excl = (task.get("excluded_username") or "").strip().lstrip("@").lower()
+    if excl and username and username.strip().lstrip("@").lower() == excl:
+        try:
+            await bot.send_message(
+                user_id,
+                f"❌ Эту задачу делал ты сам — проверять её нельзя. "
+                f"Пусть возьмёт другой исполнитель.",
+            )
+        except Exception:
+            pass
+        logger.info(
+            "[assign] @%s — excluded для %s (это его исходная задача)",
+            username, record_id,
+        )
+        return False
+
     if await db.has_pending_result(user_id):
         logger.warning(
             "[assign] У user_id=%s уже есть активная задача; отказ по %s",
@@ -934,6 +1072,11 @@ async def _assign_user(user_id: int, username: str, record_id: str, bot: Bot) ->
     await db.insert_pending_result(
         user_id, username, record_id, task.get("task_number"), task.get("task_name"),
     )
+
+    # Запоминаем username взявшего — пригодится для C-group, чтобы при
+    # последующем «Отправить на проверку» автоматически передать его как
+    # excluded в Проверка-итерацию.
+    await db.set_assignee_username(record_id, username)
 
     start_time = utc_now_iso()
     await airtable.set_assignee(record_id, username, start_time)
@@ -970,6 +1113,37 @@ async def _assign_user(user_id: int, username: str, record_id: str, bot: Bot) ->
         )
     except Exception as e:
         logger.warning("Не удалось уведомить @%s: %s", username, e)
+
+    # C-group: если это Проверка-итерация — DM-им проверяющему результат
+    # исходной (Выполнение-)итерации. Источник — Airtable.Результат
+    # родителя (parent_record_id). Текст идёт отдельным сообщением, чтобы
+    # не смешиваться с инструкциями выше.
+    if task.get("mode") == "Проверка" and task.get("parent_record_id"):
+        try:
+            parent_result = await airtable.fetch_parent_result(task["parent_record_id"])
+        except Exception as e:
+            logger.warning("[assign] fetch_parent_result(%s) failed: %s", task["parent_record_id"], e)
+            parent_result = None
+
+        if parent_result:
+            try:
+                await bot.send_message(
+                    user_id,
+                    f"📎 Результат проверяемой задачи:\n\n{parent_result}",
+                )
+            except Exception as e:
+                logger.warning(
+                    "[assign] DM parent result to @%s failed: %s", username, e,
+                )
+        else:
+            try:
+                await bot.send_message(
+                    user_id,
+                    "⚠️ Не удалось подгрузить результат исходной задачи. "
+                    "Попроси модератора прислать его вручную.",
+                )
+            except Exception:
+                pass
 
     # Уведомление в группу модераторов
     try:

@@ -93,7 +93,8 @@ def _sqlite_init_schema() -> None:
 
 def _sqlite_migrate_result_columns() -> None:
     """Добавляет result_* колонки в старые БД (до SR-2). SQLite не умеет
-    ADD COLUMN IF NOT EXISTS, поэтому проверяем через PRAGMA."""
+    ADD COLUMN IF NOT EXISTS, поэтому проверяем через PRAGMA. Также мигрируем
+    review-колонки в tasks (C-group: Проверка ассистентом)."""
     con = _get_sqlite_conn()
     try:
         cols = {row["name"] for row in con.execute("PRAGMA table_info(pending_results)").fetchall()}
@@ -103,6 +104,16 @@ def _sqlite_migrate_result_columns() -> None:
             con.execute("ALTER TABLE pending_results ADD COLUMN result_type TEXT")
         if "result_received_at" not in cols:
             con.execute("ALTER TABLE pending_results ADD COLUMN result_received_at TEXT")
+
+        tcols = {row["name"] for row in con.execute("PRAGMA table_info(tasks)").fetchall()}
+        if "review_type" not in tcols:
+            con.execute("ALTER TABLE tasks ADD COLUMN review_type TEXT")
+        if "excluded_username" not in tcols:
+            con.execute("ALTER TABLE tasks ADD COLUMN excluded_username TEXT")
+        if "assignee_username" not in tcols:
+            con.execute("ALTER TABLE tasks ADD COLUMN assignee_username TEXT")
+        if "parent_record_id" not in tcols:
+            con.execute("ALTER TABLE tasks ADD COLUMN parent_record_id TEXT")
         con.commit()
     finally:
         con.close()
@@ -119,18 +130,22 @@ def _dict_row(row, keys) -> dict:
 
 _SCHEMA_SQLITE = """
     CREATE TABLE IF NOT EXISTS tasks (
-        id             INTEGER PRIMARY KEY AUTOINCREMENT,
-        record_id      TEXT    NOT NULL UNIQUE,
-        task_number    INTEGER,
-        task_name      TEXT    NOT NULL,
-        task_text      TEXT    NOT NULL,
-        mode           TEXT,
-        limit_hours    FLOAT   DEFAULT 0,
-        status         TEXT    NOT NULL DEFAULT 'loaded',
-        chat_id        INTEGER,
-        message_id     INTEGER,
-        published_at   TEXT,
-        loaded_at      TEXT DEFAULT (datetime('now'))
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        record_id         TEXT    NOT NULL UNIQUE,
+        task_number       INTEGER,
+        task_name         TEXT    NOT NULL,
+        task_text         TEXT    NOT NULL,
+        mode              TEXT,
+        limit_hours       FLOAT   DEFAULT 0,
+        status            TEXT    NOT NULL DEFAULT 'loaded',
+        chat_id           INTEGER,
+        message_id        INTEGER,
+        published_at      TEXT,
+        loaded_at         TEXT DEFAULT (datetime('now')),
+        review_type       TEXT,
+        excluded_username TEXT,
+        assignee_username TEXT,
+        parent_record_id  TEXT
     );
 
     CREATE TABLE IF NOT EXISTS pending_results (
@@ -171,6 +186,11 @@ async def ensure_schema() -> None:
                 "ALTER TABLE pending_results "
                 "ADD COLUMN IF NOT EXISTS result_received_at TIMESTAMPTZ"
             )
+            # C-group: review-колонки в tasks
+            await con.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS review_type TEXT")
+            await con.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS excluded_username TEXT")
+            await con.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS assignee_username TEXT")
+            await con.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS parent_record_id TEXT")
         logger.info("PostgreSQL schema ensured")
     else:
         _sqlite_init_schema()
@@ -179,18 +199,22 @@ async def ensure_schema() -> None:
 
 _SCHEMA_PG = """
     CREATE TABLE IF NOT EXISTS tasks (
-        id             SERIAL PRIMARY KEY,
-        record_id      TEXT    NOT NULL UNIQUE,
-        task_number    INTEGER,
-        task_name      TEXT    NOT NULL,
-        task_text      TEXT    NOT NULL,
-        mode           TEXT,
-        limit_hours    FLOAT   DEFAULT 0,
-        status         TEXT    NOT NULL DEFAULT 'loaded',
-        chat_id        BIGINT,
-        message_id     BIGINT,
-        published_at   TIMESTAMPTZ,
-        loaded_at      TIMESTAMPTZ DEFAULT NOW()
+        id                SERIAL PRIMARY KEY,
+        record_id         TEXT    NOT NULL UNIQUE,
+        task_number       INTEGER,
+        task_name         TEXT    NOT NULL,
+        task_text         TEXT    NOT NULL,
+        mode              TEXT,
+        limit_hours       FLOAT   DEFAULT 0,
+        status            TEXT    NOT NULL DEFAULT 'loaded',
+        chat_id           BIGINT,
+        message_id        BIGINT,
+        published_at      TIMESTAMPTZ,
+        loaded_at         TIMESTAMPTZ DEFAULT NOW(),
+        review_type       TEXT,
+        excluded_username TEXT,
+        assignee_username TEXT,
+        parent_record_id  TEXT
     );
 
     CREATE TABLE IF NOT EXISTS pending_results (
@@ -222,6 +246,9 @@ async def insert_task(
     task_text: str,
     mode: str | None,
     limit_hours: float,
+    review_type: str | None = None,
+    excluded_username: str | None = None,
+    parent_record_id: str | None = None,
 ) -> str:
     """UPSERT задачи. Возвращает код результата:
         'inserted'       — новая запись добавлена;
@@ -244,21 +271,27 @@ async def insert_task(
             await con.execute(
                 """
                 INSERT INTO tasks (record_id, task_number, task_name, task_text,
-                                   mode, limit_hours, status, loaded_at)
-                VALUES ($1, $2, $3, $4, $5, $6, 'loaded', NOW())
+                                   mode, limit_hours, status, loaded_at,
+                                   review_type, excluded_username, parent_record_id)
+                VALUES ($1, $2, $3, $4, $5, $6, 'loaded', NOW(), $7, $8, $9)
                 ON CONFLICT (record_id) DO UPDATE SET
-                    task_number  = EXCLUDED.task_number,
-                    task_name    = EXCLUDED.task_name,
-                    task_text    = EXCLUDED.task_text,
-                    mode         = EXCLUDED.mode,
-                    limit_hours  = EXCLUDED.limit_hours,
-                    status       = 'loaded',
-                    chat_id      = NULL,
-                    message_id   = NULL,
-                    published_at = NULL,
-                    loaded_at    = NOW()
+                    task_number       = EXCLUDED.task_number,
+                    task_name         = EXCLUDED.task_name,
+                    task_text         = EXCLUDED.task_text,
+                    mode              = EXCLUDED.mode,
+                    limit_hours       = EXCLUDED.limit_hours,
+                    status            = 'loaded',
+                    chat_id           = NULL,
+                    message_id        = NULL,
+                    published_at      = NULL,
+                    loaded_at         = NOW(),
+                    review_type       = EXCLUDED.review_type,
+                    excluded_username = EXCLUDED.excluded_username,
+                    assignee_username = NULL,
+                    parent_record_id  = EXCLUDED.parent_record_id
                 """,
                 record_id, task_number, task_name, task_text, mode, limit_hours,
+                review_type, excluded_username, parent_record_id,
             )
     else:
         con = _get_sqlite_conn()
@@ -266,21 +299,29 @@ async def insert_task(
             con.execute(
                 """
                 INSERT INTO tasks (record_id, task_number, task_name, task_text,
-                                   mode, limit_hours, status, loaded_at)
-                VALUES (?, ?, ?, ?, ?, ?, 'loaded', datetime('now'))
+                                   mode, limit_hours, status, loaded_at,
+                                   review_type, excluded_username, parent_record_id)
+                VALUES (?, ?, ?, ?, ?, ?, 'loaded', datetime('now'), ?, ?, ?)
                 ON CONFLICT(record_id) DO UPDATE SET
-                    task_number  = excluded.task_number,
-                    task_name    = excluded.task_name,
-                    task_text    = excluded.task_text,
-                    mode         = excluded.mode,
-                    limit_hours  = excluded.limit_hours,
-                    status       = 'loaded',
-                    chat_id      = NULL,
-                    message_id   = NULL,
-                    published_at = NULL,
-                    loaded_at    = datetime('now')
+                    task_number       = excluded.task_number,
+                    task_name         = excluded.task_name,
+                    task_text         = excluded.task_text,
+                    mode              = excluded.mode,
+                    limit_hours       = excluded.limit_hours,
+                    status            = 'loaded',
+                    chat_id           = NULL,
+                    message_id        = NULL,
+                    published_at      = NULL,
+                    loaded_at         = datetime('now'),
+                    review_type       = excluded.review_type,
+                    excluded_username = excluded.excluded_username,
+                    assignee_username = NULL,
+                    parent_record_id  = excluded.parent_record_id
                 """,
-                (record_id, task_number, task_name, task_text, mode, limit_hours),
+                (
+                    record_id, task_number, task_name, task_text, mode, limit_hours,
+                    review_type, excluded_username, parent_record_id,
+                ),
             )
             con.commit()
         finally:
@@ -401,6 +442,29 @@ async def update_task_assigned(record_id: str) -> bool:
             )
             con.commit()
             return cur.rowcount > 0
+        finally:
+            con.close()
+
+
+async def set_assignee_username(record_id: str, username: str | None) -> None:
+    """Записывает Telegram username взявшего задачу в tasks.assignee_username.
+    Используется при назначении исполнителя для C-group: при создании
+    Проверка-итерации этот username станет excluded_username (нельзя
+    проверять собственную работу)."""
+    if _use_postgres:
+        async with _pg_pool.acquire() as con:
+            await con.execute(
+                "UPDATE tasks SET assignee_username = $1 WHERE record_id = $2",
+                username, record_id,
+            )
+    else:
+        con = _get_sqlite_conn()
+        try:
+            con.execute(
+                "UPDATE tasks SET assignee_username = ? WHERE record_id = ?",
+                (username, record_id),
+            )
+            con.commit()
         finally:
             con.close()
 
@@ -557,7 +621,8 @@ async def update_task_fields(record_id: str, fields: dict) -> None:
                     task_name = COALESCE($2, task_name),
                     task_text = COALESCE($3, task_text),
                     mode = COALESCE($4, mode),
-                    limit_hours = COALESCE($5, limit_hours)
+                    limit_hours = COALESCE($5, limit_hours),
+                    review_type = COALESCE($6, review_type)
                 WHERE record_id = $1
                 """,
                 record_id,
@@ -565,6 +630,7 @@ async def update_task_fields(record_id: str, fields: dict) -> None:
                 fields.get("task_text"),
                 fields.get("mode"),
                 fields.get("limit_hours"),
+                fields.get("review_type"),
             )
     else:
         con = _get_sqlite_conn()
@@ -577,7 +643,8 @@ async def update_task_fields(record_id: str, fields: dict) -> None:
                         task_name = ?,
                         task_text = ?,
                         mode = ?,
-                        limit_hours = ?
+                        limit_hours = ?,
+                        review_type = ?
                     WHERE record_id = ?
                     """,
                     (
@@ -585,6 +652,7 @@ async def update_task_fields(record_id: str, fields: dict) -> None:
                         fields.get("task_text") or row["task_text"],
                         fields.get("mode") or row["mode"],
                         fields.get("limit_hours") or row["limit_hours"],
+                        fields.get("review_type") or row["review_type"],
                         record_id,
                     ),
                 )

@@ -62,6 +62,12 @@ class Config:
         self.test_mode: bool = _opt("TEST_MODE", "false").lower() == "true"
         self.test_user_id: int = int(_opt("TEST_USER_ID", "0"))
 
+        # Проверка ассистентом (C-group): лимит времени на саму проверку
+        # (минут) — пишется в карточку и в Лимит(час) новой Проверка-итерации.
+        # Лимит доработки — информационная строка в карточке (часов).
+        self.review_time_limit_min: int = int(_opt("REVIEW_TIME_LIMIT_MIN", "15"))
+        self.rework_limit_hours: int = int(_opt("REWORK_LIMIT_HOURS", "1"))
+
         if self.test_mode:
             logger.warning(
                 "⚠️  TEST MODE enabled — TEST_USER_ID=%s, публикации → MODERATOR_GROUP_ID",
