@@ -62,12 +62,31 @@ INFO_TEXT = (
     "исполнитель). В Airtable ставится Статус=«В работе», Время начала, Исполнитель. "
     "Сообщение в группе автоматически редактируется — добавляется метка «✅ Взял @username», "
     "чтобы остальные видели, что задача уже занята.\n\n"
-    "<b>📨 Принять / Не принять</b>\n"
-    "Когда исполнитель пришлёт результат в ЛС боту, в группу модераторов прилетит карточка "
-    "с кнопками:\n"
-    "• <b>✅ Принять</b> — Статус → «Завершено», Время окончания, Результат, Модератор = ты.\n"
+    "<b>📨 Сдача результата</b>\n"
+    "Исполнитель открывает /status и жмёт <b>«📝 Сдать результат»</b> — после этого "
+    "его сообщения в ЛС копятся в один пакет (текст / фото / файл / голосовое — "
+    "сколько надо). После каждой части в ЛС появляются кнопки "
+    "<b>«➕ Жду ещё» / «✅ Отправить» / «🗑 Сбросить»</b>. Когда жмёт «Отправить» — "
+    "в эту группу прилетает карточка <b>«📨 Результат по задаче #N»</b> с заголовком "
+    "и форвардами всех частей подряд. На карточке кнопки:\n"
+    "• <b>✅ Принять</b> — Статус → «Завершено», Время окончания, Результат "
+    "(склейка всех частей), Модератор = ты.\n"
     "• <b>❌ Не принимать</b> — бот спросит причину, отправит её исполнителю в ЛС; "
-    "задача остаётся в работе, исполнитель присылает доработку.\n\n"
+    "задача остаётся в работе, исполнитель присылает доработку (накопитель сбрасывается, "
+    "ему надо снова нажать «Сдать результат»).\n"
+    "• <b>💬 Написать исполнителю</b> — для свободной переписки без отклонения "
+    "(в Airtable не пишется). Бот спросит у тебя текст и перешлёт его исполнителю в ЛС.\n"
+    "После «Отправить» исполнитель может прислать ещё сообщения — они копятся "
+    "в <i>дозалив</i> с кнопкой <b>«📨 Доотправить»</b>. Когда нажмёт — форварды "
+    "придут сюда же, как ответ на исходную карточку, и допишутся в результат.\n\n"
+    "<b>❓ Вопросы исполнителя</b>\n"
+    "В /status у исполнителя есть кнопка <b>«❓ Задать вопрос»</b>. Бот спрашивает "
+    "текст, потом просит выбрать «🚧 Блокирующий» / «📨 Не блокирующий» и:\n"
+    "• создаёт запись в таблице Airtable <b>«Вопросы»</b> "
+    "(линкуется на «Задачи» через Iteration.Задача и на «Исполнители» по Телеграм);\n"
+    "• присылает в эту группу карточку с кнопкой <b>«✏️ Ответить»</b>.\n"
+    "Жмёшь «Ответить» — бот спрашивает текст, записывает его в поле «Ответ» в Airtable "
+    "и шлёт ответ исполнителю в ЛС.\n\n"
     "<b>⏰ Уведомления планировщика</b>\n"
     "• Через 30 минут после публикации без взятия — уведомление с двумя кнопками:\n"
     "   <b>🔁 Опубликовать повторно</b> — <u>старое сообщение удаляется</u> из группы "
@@ -77,6 +96,9 @@ INFO_TEXT = (
     "• Через 15 / 30 / 45 минут, затем 1 / 2 часа после получения результата — "
     "напоминание модератору (если забыл принять или отклонить). После 2 часов "
     "бот замолкает, задача остаётся в pending-списке.\n"
+    "• Лимит времени (поле «Лимит (час)» в Airtable):\n"
+    "   <b>50%</b> и <b>80%</b> прошло — бот пишет исполнителю в ЛС.\n"
+    "   <b>100%</b> (превышение) — бот пишет и исполнителю, и сюда в группу.\n"
     "• Раз в 5 минут — синхронизация с Airtable: если задачу удалили в Airtable вручную, "
     "бот сам отменяет её (удаляет сообщение из группы, ставит «cancelled») и пишет "
     "сюда уведомление.\n\n"
@@ -250,9 +272,9 @@ async def on_panel_action(callback: CallbackQuery) -> None:
 
 async def _awaiting_moderator_input(message: Message) -> bool:
     """Фильтр хэндлера: срабатывает только когда модератор реально
-    сейчас вводит ответ на запрос бота (количество задач или причина
-    отказа). Иначе — пропускаем, чтобы сообщение долетело до
-    executor.handle_private (сдача результата исполнителем).
+    сейчас вводит ответ на запрос бота (количество задач, причина отказа,
+    личное сообщение исполнителю или ответ на вопрос). Иначе — пропускаем,
+    чтобы сообщение долетело до executor.handle_private.
     """
     if not message.text or message.text.startswith("/"):
         return False
@@ -261,22 +283,34 @@ async def _awaiting_moderator_input(message: Message) -> bool:
         return True
     if await cache.get_awaiting_reject_reason(user_id):
         return True
+    if await cache.get_awaiting_msg_to_user(user_id):
+        return True
+    if await cache.get_awaiting_question_answer(user_id):
+        return True
     return False
 
 
 @router.message(_awaiting_moderator_input)
-async def handle_task_count_or_reject_reason(message: Message, bot: Bot) -> None:
+async def handle_moderator_input(message: Message, bot: Bot) -> None:
     user_id = message.from_user.id
 
-    # 1. Проверяем awaiting_task_count
     if await cache.get_awaiting_task_count(user_id):
         await _handle_task_count_input(message)
         return
 
-    # 2. Проверяем awaiting_reject_reason
     reason_key = await cache.get_awaiting_reject_reason(user_id)
     if reason_key:
         await _handle_reject_reason_input(message, bot, reason_key)
+        return
+
+    msg_key = await cache.get_awaiting_msg_to_user(user_id)
+    if msg_key:
+        await _handle_msg_to_user_input(message, bot, msg_key)
+        return
+
+    answer_key = await cache.get_awaiting_question_answer(user_id)
+    if answer_key:
+        await _handle_question_answer_input(message, bot, answer_key)
         return
 
 
@@ -405,6 +439,134 @@ async def _handle_reject_reason_input(message: Message, bot: Bot, reason_key: st
             pass
         await cache.del_moderator_message_id(record_id)
 
+    # Сбрасываем накопленный результат и фазу — исполнитель должен начать заново
+    # через «📝 Сдать результат». Само pending_results остаётся (задача в работе).
+    await cache.clear_result_parts(record_id)
+    await cache.clear_addendum_parts(record_id)
+    await cache.del_submit_phase(user_id)
+    await cache.del_result_text(record_id)
+
+
+# ── Модератор → исполнитель (личное сообщение) ────────────────────────────────
+
+@router.callback_query(lambda c: c.data and c.data.startswith("msgto_"))
+async def on_msg_to_user(callback: CallbackQuery) -> None:
+    """Кнопка «💬 Написать исполнителю» на карточке результата."""
+    if not cfg.is_moderator(callback.from_user):
+        await callback.answer("Нет прав.", show_alert=True)
+        return
+    parts = callback.data.split("msgto_", 1)[1].split("_")
+    if len(parts) != 2:
+        await callback.answer("Неверный формат.", show_alert=True)
+        return
+    record_id, user_id_str = parts
+    try:
+        target_user_id = int(user_id_str)
+    except ValueError:
+        await callback.answer("Неверный user_id.", show_alert=True)
+        return
+
+    await cache.set_awaiting_msg_to_user(callback.from_user.id, target_user_id, record_id)
+    await callback.message.answer(
+        "💬 Напиши сообщение исполнителю — я перешлю его в ЛС:"
+    )
+    await callback.answer()
+
+
+async def _handle_msg_to_user_input(message: Message, bot: Bot, msg_key: str) -> None:
+    """Модератор написал текст — пересылаем исполнителю в ЛС."""
+    moderator_id = message.from_user.id
+    parts = msg_key.split(":")
+    if len(parts) != 2:
+        await message.answer("Ошибка: неверный формат данных.")
+        await cache.del_awaiting_msg_to_user(moderator_id)
+        return
+    target_user_id_str, record_id = parts
+    try:
+        target_user_id = int(target_user_id_str)
+    except ValueError:
+        await message.answer("Ошибка: неверный user_id.")
+        await cache.del_awaiting_msg_to_user(moderator_id)
+        return
+
+    await cache.del_awaiting_msg_to_user(moderator_id)
+    text = message.text.strip()
+    moderator_handle = message.from_user.username or message.from_user.first_name or "модератор"
+
+    try:
+        await bot.send_message(
+            target_user_id,
+            f"💬 Сообщение от модератора @{moderator_handle}:\n\n{text}",
+        )
+        await message.answer("Отправлено.")
+    except Exception as e:
+        logger.warning("Не удалось отправить сообщение исполнителю %s: %s", target_user_id, e)
+        await message.answer(f"Не удалось отправить (исполнитель закрыл ЛС?): {e}")
+
+
+# ── Модератор → ответ на вопрос ───────────────────────────────────────────────
+
+@router.callback_query(lambda c: c.data and c.data.startswith("qans_"))
+async def on_answer_question(callback: CallbackQuery) -> None:
+    """Кнопка «✏️ Ответить» на карточке вопроса в группе модераторов."""
+    if not cfg.is_moderator(callback.from_user):
+        await callback.answer("Нет прав.", show_alert=True)
+        return
+    payload = callback.data.split("qans_", 1)[1]
+    parts = payload.split("_")
+    if len(parts) != 2:
+        await callback.answer("Неверный формат.", show_alert=True)
+        return
+    question_id, user_id_str = parts
+    try:
+        executor_user_id = int(user_id_str)
+    except ValueError:
+        await callback.answer("Неверный user_id.", show_alert=True)
+        return
+
+    await cache.set_awaiting_question_answer(
+        callback.from_user.id, question_id, executor_user_id,
+    )
+    await callback.message.answer("✏️ Напиши ответ — пришлю его исполнителю и сохраню в Airtable:")
+    await callback.answer()
+
+
+async def _handle_question_answer_input(message: Message, bot: Bot, answer_key: str) -> None:
+    """Текст ответа на вопрос — пишем в Airtable «Вопросы»/Ответ и DM исполнителю."""
+    moderator_id = message.from_user.id
+    parts = answer_key.split(":")
+    if len(parts) != 2:
+        await message.answer("Ошибка: неверный формат данных.")
+        await cache.del_awaiting_question_answer(moderator_id)
+        return
+    question_id, executor_user_id_str = parts
+    try:
+        executor_user_id = int(executor_user_id_str)
+    except ValueError:
+        await message.answer("Ошибка: неверный user_id.")
+        await cache.del_awaiting_question_answer(moderator_id)
+        return
+
+    await cache.del_awaiting_question_answer(moderator_id)
+    answer_text = message.text.strip()
+    moderator_handle = message.from_user.username or message.from_user.first_name or "модератор"
+
+    # 1. Пишем в Airtable
+    ok = await airtable.update_question_answer(question_id, answer_text)
+    if not ok:
+        await message.answer("⚠️ Не удалось записать ответ в Airtable. Сообщение исполнителю всё равно отправляю.")
+
+    # 2. DM исполнителю
+    try:
+        await bot.send_message(
+            executor_user_id,
+            f"💬 Ответ модератора @{moderator_handle} на твой вопрос:\n\n{answer_text}",
+        )
+        await message.answer("Ответ отправлен исполнителю.")
+    except Exception as e:
+        logger.warning("Не удалось отправить ответ исполнителю %s: %s", executor_user_id, e)
+        await message.answer(f"Ответ записан, но исполнителю не доставлено: {e}")
+
 
 # ── Публикация задачи ─────────────────────────────────────────────────────────
 
@@ -527,6 +689,10 @@ async def on_accept(callback: CallbackQuery, bot: Bot) -> None:
     await db.update_task_done(record_id)
     await db.delete_pending_result(record_id)
     await cache.del_result_text(record_id)
+    await cache.del_submit_phase(user_id)
+    await cache.clear_result_parts(record_id)
+    await cache.clear_addendum_parts(record_id)
+    await cache.del_limit_notified_all(record_id)
 
     # Уведомляем исполнителя
     try:
@@ -672,25 +838,29 @@ async def on_cancel(callback: CallbackQuery, bot: Bot) -> None:
     if status == "assigned":
         pending = await db.get_pending_result_by_record(record_id)
         if pending:
+            target_uid = pending["user_id"]
             try:
                 await bot.send_message(
-                    pending["user_id"],
+                    target_uid,
                     f"❌ Задача #{task.get('task_number')} «{task.get('task_name')}» "
                     f"отменена модератором. Если ты уже что-то сделал — пришли в ЛС, "
                     f"мы разберёмся.",
                 )
             except Exception as e:
                 logger.warning(
-                    "[cancel] не удалось уведомить исполнителя %s: %s",
-                    pending.get("user_id"), e,
+                    "[cancel] не удалось уведомить исполнителя %s: %s", target_uid, e,
                 )
             await db.delete_pending_result(record_id)
             await cache.del_result_text(record_id)
             await cache.del_moderator_message_id(record_id)
+            await cache.del_submit_phase(target_uid)
 
-    # 3. Обновить БД
+    # 3. Обновить БД и почистить весь кэш по задаче
     await db.update_task_cancelled(record_id)
     await cache.del_stale_notified(record_id)
+    await cache.clear_result_parts(record_id)
+    await cache.clear_addendum_parts(record_id)
+    await cache.del_limit_notified_all(record_id)
 
     # 4. Откатить Airtable в «Очередь»
     try:

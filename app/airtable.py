@@ -403,3 +403,91 @@ async def get_record_mode(record_id: str) -> str | None:
         fields = record.get("fields", {})
         return fields.get("Режим")
     return None
+
+
+# ── Вопросы (таблица «Вопросы») ────────────────────────────────────────────────
+
+_QUESTIONS_TABLE = "Вопросы"
+
+
+async def create_question(
+    iteration_record_id: str,
+    executor_username: str,
+    text: str,
+    blocking: bool,
+) -> str | None:
+    """Создаёт запись в таблице «Вопросы» Airtable.
+
+    Поле Задача в «Вопросы» ссылается на таблицу «Задачи», а не на
+    «Итерация». Поэтому сначала тянем Iteration-запись, оттуда читаем
+    multipleRecordLinks «Задача» и используем именно task_id как линк.
+    Возвращает record_id созданного вопроса (для последующего ответа)
+    или None при любой ошибке.
+    """
+    # 1. Получить task_id из Iteration.Задача
+    iteration = await fetch_record(iteration_record_id)
+    if not iteration:
+        logger.warning("create_question(%s): итерация не найдена", iteration_record_id)
+        return None
+    task_links = (iteration.get("fields") or {}).get("Задача")
+    task_id = task_links[0] if isinstance(task_links, list) and task_links else None
+
+    # 2. Найти исполнителя в «Исполнители»
+    executor_id = await _lookup_record_id_by_telegram("Исполнители", executor_username) \
+        if executor_username else None
+
+    # 3. POST в «Вопросы»
+    fields: dict = {
+        "Текст": text,
+        "Блокирующий": bool(blocking),
+    }
+    if task_id:
+        fields["Задача"] = [task_id]
+    else:
+        logger.warning(
+            "create_question(%s): у итерации не заполнено поле Задача — "
+            "вопрос создаётся без линка на задачу",
+            iteration_record_id,
+        )
+    if executor_id:
+        fields["Исполнитель"] = [executor_id]
+
+    table_url = f"{_BASE}/{cfg.airtable_base_id}/{quote(_QUESTIONS_TABLE, safe='')}"
+    await _rate_limit()
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                table_url, headers=_headers(), json={"fields": fields},
+            ) as resp:
+                data = await _handle(resp)
+                if data and isinstance(data, dict):
+                    qid = data.get("id")
+                    logger.info(
+                        "Airtable: создан вопрос %s (Задача=%s, Исполнитель=%s, Блокирующий=%s)",
+                        qid, task_id, executor_id, blocking,
+                    )
+                    return qid
+    except Exception as e:
+        logger.error("create_question failed: %s", e)
+    return None
+
+
+async def update_question_answer(question_id: str, answer_text: str) -> bool:
+    """PATCH в «Вопросы»/<question_id> — пишет поле «Ответ».
+    «Дата ответа» обновится автоматически (lastModifiedTime)."""
+    table_url = f"{_BASE}/{cfg.airtable_base_id}/{quote(_QUESTIONS_TABLE, safe='')}/{question_id}"
+    await _rate_limit()
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.patch(
+                table_url,
+                headers=_headers(),
+                json={"fields": {"Ответ": answer_text}},
+            ) as resp:
+                data = await _handle(resp)
+                if data:
+                    logger.info("Airtable: ответ записан в вопрос %s", question_id)
+                    return True
+    except Exception as e:
+        logger.error("update_question_answer(%s) failed: %s", question_id, e)
+    return False

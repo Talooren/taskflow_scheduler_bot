@@ -723,6 +723,46 @@ async def set_pending_result_content(
             con.close()
 
 
+async def list_assigned_for_limit_check() -> list[dict]:
+    """Все назначенные задачи с заполненным limit_hours, у которых исполнитель
+    ещё не отправил результат. Используется шедулером check_limits для
+    напоминаний о превышении 50/80/100% лимита.
+    Возвращает: record_id, task_number, task_name, limit_hours,
+                user_id, username, assigned_at.
+    """
+    if _use_postgres:
+        async with _pg_pool.acquire() as con:
+            rows = await con.fetch(
+                """
+                SELECT t.record_id, t.task_number, t.task_name, t.limit_hours,
+                       p.user_id, p.username, p.assigned_at
+                FROM tasks t
+                JOIN pending_results p ON t.record_id = p.record_id
+                WHERE t.status = 'assigned'
+                  AND t.limit_hours IS NOT NULL AND t.limit_hours > 0
+                  AND p.result_content IS NULL
+                """
+            )
+            return [dict(r) for r in rows]
+    else:
+        con = _get_sqlite_conn()
+        try:
+            rows = con.execute(
+                """
+                SELECT t.record_id, t.task_number, t.task_name, t.limit_hours,
+                       p.user_id, p.username, p.assigned_at
+                FROM tasks t
+                JOIN pending_results p ON t.record_id = p.record_id
+                WHERE t.status = 'assigned'
+                  AND t.limit_hours IS NOT NULL AND t.limit_hours > 0
+                  AND p.result_content IS NULL
+                """
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            con.close()
+
+
 async def list_pending_with_result() -> list[dict]:
     """Все pending_results с уже полученным, но ещё не принятым результатом.
     Используется при старте бота для прогрева Redis (SR-2) и для напоминаний

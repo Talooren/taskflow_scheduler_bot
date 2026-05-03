@@ -77,12 +77,62 @@ def build_publish_keyboard(record_id: str, test_mode: bool) -> InlineKeyboardMar
 
 
 def accept_reject_kb(record_id: str, user_id: int) -> InlineKeyboardMarkup:
-    """Кнопки для карточки результата в группе модераторов."""
+    """Кнопки для карточки результата в группе модераторов: принять/отклонить
+    плюс отдельная кнопка «💬 Написать» для свободной переписки с исполнителем."""
     return InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="✅ Принять", callback_data=f"accept_{record_id}_{user_id}"),
             InlineKeyboardButton(text="❌ Не принимать", callback_data=f"reject_{record_id}_{user_id}"),
         ],
+        [
+            InlineKeyboardButton(text="💬 Написать исполнителю", callback_data=f"msgto_{record_id}_{user_id}"),
+        ],
+    ])
+
+
+def status_assignee_kb(record_id: str) -> InlineKeyboardMarkup:
+    """Клавиатура для /status у исполнителя с активной задачей.
+
+    Кнопки: «📝 Сдать результат» (включает фазу 'open' накопителя)
+    и «❓ Задать вопрос» (стартует FSM создания записи в Airtable «Вопросы»).
+    """
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📝 Сдать результат", callback_data=f"submit_{record_id}")],
+        [InlineKeyboardButton(text="❓ Задать вопрос", callback_data=f"ask_{record_id}")],
+    ])
+
+
+def result_acc_kb(record_id: str) -> InlineKeyboardMarkup:
+    """Клавиатура под подтверждением каждой части накопителя."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ Жду ещё", callback_data=f"rmore_{record_id}")],
+        [InlineKeyboardButton(text="✅ Отправить", callback_data=f"rsend_{record_id}")],
+        [InlineKeyboardButton(text="🗑 Сбросить", callback_data=f"rclear_{record_id}")],
+    ])
+
+
+def addendum_kb(record_id: str) -> InlineKeyboardMarkup:
+    """Клавиатура под подтверждением части дозалива (фаза 'submitted')."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📨 Доотправить", callback_data=f"asend_{record_id}")],
+        [InlineKeyboardButton(text="🗑 Сбросить дозалив", callback_data=f"aclear_{record_id}")],
+    ])
+
+
+def blocking_choice_kb(record_id: str) -> InlineKeyboardMarkup:
+    """Кнопки выбора Блокирующий/Не блокирующий после ввода текста вопроса."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🚧 Блокирующий", callback_data=f"qblk_{record_id}_1")],
+        [InlineKeyboardButton(text="📨 Не блокирующий", callback_data=f"qblk_{record_id}_0")],
+    ])
+
+
+def question_card_kb(question_id: str, executor_user_id: int) -> InlineKeyboardMarkup:
+    """Кнопка «✏️ Ответить» на карточке вопроса в группе модераторов.
+    question_id — это record_id из таблицы Airtable «Вопросы», executor_user_id —
+    Telegram id исполнителя для DM-уведомления при ответе."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✏️ Ответить", callback_data=f"qans_{question_id}_{executor_user_id}")],
     ])
 
 

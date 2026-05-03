@@ -232,6 +232,113 @@ async def _auto_cancel_missing(task: dict) -> None:
         logger.warning("[sync] notify moderators failed: %s", e)
 
 
+_LIMIT_TIERS: tuple[tuple[str, float], ...] = (
+    ("50",  0.50),
+    ("80",  0.80),
+    ("100", 1.00),
+)
+
+
+def _format_remaining(seconds: float) -> str:
+    """Человекочитаемый остаток: 'Xмин', 'Yч', 'Yч Xмин', '0' при отрицательном."""
+    seconds = max(int(seconds), 0)
+    h, rem = divmod(seconds, 3600)
+    m = rem // 60
+    if h and m:
+        return f"{h}ч {m}мин"
+    if h:
+        return f"{h}ч"
+    return f"{m}мин"
+
+
+async def check_limits() -> None:
+    """Каждые 5 мин проверяем активные назначенные задачи на превышение
+    50/80/100% лимита. Дедуп через cache.is_limit_notified.
+
+    Тиры:
+    - 50%, 80% → DM исполнителю.
+    - 100%    → DM исполнителю + сообщение в группу модераторов.
+    """
+    rows = await db.list_assigned_for_limit_check()
+    if not rows:
+        return
+
+    now = datetime.now(timezone.utc)
+    for row in rows:
+        limit_hours = row.get("limit_hours") or 0
+        if limit_hours <= 0:
+            continue
+        assigned_at = _to_utc_dt(row.get("assigned_at"))
+        if assigned_at is None:
+            continue
+
+        elapsed = (now - assigned_at).total_seconds()
+        limit_sec = float(limit_hours) * 3600.0
+        if limit_sec <= 0:
+            continue
+        ratio = elapsed / limit_sec
+
+        record_id = row["record_id"]
+        task_num = row.get("task_number") or "?"
+        task_name = row.get("task_name") or ""
+        user_id = row["user_id"]
+        username = row.get("username") or "?"
+
+        # Идём от самого высокого тира к низкому, шлём только не-отправленные.
+        for label, threshold in reversed(_LIMIT_TIERS):
+            if ratio < threshold:
+                continue
+            if await cache.is_limit_notified(record_id, label):
+                continue
+
+            remaining_sec = limit_sec - elapsed
+            elapsed_str = _format_remaining(elapsed)
+            remaining_str = _format_remaining(remaining_sec)
+
+            if label == "50":
+                user_text = (
+                    f"⏰ Прошло 50% лимита по задаче #{task_num} «{task_name}»\n"
+                    f"Затрачено: {elapsed_str} из {limit_hours} ч. Осталось: {remaining_str}."
+                )
+            elif label == "80":
+                user_text = (
+                    f"⚠️ Прошло 80% лимита по задаче #{task_num} «{task_name}»\n"
+                    f"Осталось: ~{remaining_str}. Если не успеваешь — спроси модератора через "
+                    f"/status → «❓ Задать вопрос»."
+                )
+            else:  # 100
+                user_text = (
+                    f"🚨 Превышен лимит по задаче #{task_num} «{task_name}»\n"
+                    f"Лимит: {limit_hours} ч, прошло: {elapsed_str}. "
+                    f"Свяжись с модератором, если нужна помощь."
+                )
+
+            try:
+                await _bot.send_message(user_id, user_text)
+            except Exception as e:
+                logger.warning("[limits] DM @%s (id=%s) failed: %s", username, user_id, e)
+
+            if label == "100":
+                try:
+                    await _bot.send_message(
+                        cfg.moderator_group_id,
+                        f"🚨 Задача #{task_num} «{task_name}» — лимит "
+                        f"{limit_hours} ч превышен. Исполнитель: @{username} (прошло {elapsed_str}).",
+                    )
+                except Exception as e:
+                    logger.warning("[limits] notify mod group failed: %s", e)
+
+            await cache.set_limit_notified(record_id, label)
+            logger.info(
+                "[limits] %s tier=%s sent (elapsed=%s, limit=%sh)",
+                record_id, label, elapsed_str, limit_hours,
+            )
+            # Шлём только один тир за прогон, чтобы не сыпать всех сразу
+            # (на случай рестарта бота с большим простоем — пусть тиры
+            # «догоняются» по одному за каждый запуск шедулера).
+            break
+
+
 async def sync_with_airtable() -> None:
     """Сверяет активные задачи в БД с Airtable. Если запись точно удалена
     (HTTP 404), задача авто-отменяется. Транзиентные ошибки (None от
@@ -288,8 +395,15 @@ def setup(bot: Bot) -> None:
         id="airtable_sync",
         replace_existing=True,
     )
+    scheduler.add_job(
+        check_limits,
+        "interval",
+        minutes=5,
+        id="limits",
+        replace_existing=True,
+    )
     scheduler.start()
     logger.info(
         "[scheduler] Запущен: check_stale=1min, check_pending_moderation=5min, "
-        "refresh_moderators=5min, sync_with_airtable=5min"
+        "refresh_moderators=5min, sync_with_airtable=5min, check_limits=5min"
     )

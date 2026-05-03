@@ -6,7 +6,7 @@ from aiogram.types import Message
 
 from app import airtable, db
 from app.config import cfg
-from app.keyboards import moderator_reply_kb
+from app.keyboards import moderator_reply_kb, status_assignee_kb
 
 router = Router()
 
@@ -81,8 +81,13 @@ async def cmd_status(message: Message) -> None:
         await message.answer(
             f"Ваша активная задача:\n\n"
             f"<b>#{pending['task_number']} — {pending['task_name']}</b>\n\n"
-            f"Когда закончите — отправьте результат мне в этот чат.",
+            f"📝 <b>Сдать результат</b> — нажмите кнопку ниже, потом присылайте "
+            f"сообщения (текст / фото / файл / голосовое — можно несколько). "
+            f"После всех сообщений жмите «✅ Отправить», и они улетят модератору одним пакетом.\n"
+            f"❓ <b>Задать вопрос</b> — если что-то непонятно по задаче, спросите модератора. "
+            f"Можно отметить вопрос как блокирующий (нельзя продолжать без ответа).",
             parse_mode="HTML",
+            reply_markup=status_assignee_kb(pending["record_id"]),
         )
     else:
         await message.answer(
