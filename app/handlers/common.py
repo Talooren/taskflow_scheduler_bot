@@ -25,7 +25,6 @@ async def cmd_start(message: Message) -> None:
 
     # 1. Модератор — приветствие с клавиатурой управления
     if cfg.is_moderator(message.from_user):
-        enabled = await db.is_publishing_enabled()
         await message.answer(
             "🛠 <b>Панель модератора TaskFlow</b>\n\n"
             "Управление публикацией задач — кнопки снизу.\n"
@@ -34,7 +33,7 @@ async def cmd_start(message: Message) -> None:
             "• /панель — показать клавиатуру заново, если свернул.\n"
             "• /status — если брал задачу как исполнитель.",
             parse_mode="HTML",
-            reply_markup=moderator_reply_kb(enabled),
+            reply_markup=moderator_reply_kb(),
         )
         return
 

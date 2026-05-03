@@ -5,7 +5,7 @@
   /панель, /panel — открыть панель
 Callbacks:
   load_tasks, clear_queue, refresh_schedule
-  publish_{record_id}, take_test_{record_id}
+  publish_{record_id}, take_test_{record_id}, cancel_{record_id}
   accept_{record_id}_{user_id}, reject_{record_id}_{user_id}
   restale_{record_id}, skip_stale_{record_id}
 """
@@ -23,14 +23,12 @@ from app.keyboards import (
     BTN_CLEAR,
     BTN_INFO,
     BTN_LOAD,
-    BTN_PUB_OFF,
-    BTN_PUB_ON,
     BTN_REFRESH,
     accept_reject_kb,
     build_publish_keyboard,
-    moderator_panel_kb,
     moderator_reply_kb,
     publish_task_kb,
+    published_card_kb,
     stale_notification_kb,
 )
 from app.utils import utc_now_iso
@@ -41,22 +39,29 @@ INFO_TEXT = (
     "<b>📥 Загрузить задачи</b>\n"
     "Загружает из Airtable записи со статусом «Очередь» (сколько — ты вводишь числом). "
     "На каждую задачу приходит карточка с кнопкой «✅ Опубликовать». "
-    "Если задача раньше была завершена и её вернули в Очередь — она «перезальётся» заново, "
-    "но активные (в работе у исполнителя) не трогаются.\n\n"
+    "Если задача раньше была завершена/отменена и её вернули в Очередь — она "
+    "«перезальётся» заново. Активные (опубликованы или в работе) пропускаются — "
+    "бот в ответе показывает, сколько добавлено и сколько пропущено.\n\n"
     "<b>🛑 Очистить очередь</b>\n"
     "Удаляет все загруженные, но ещё не опубликованные задачи. "
-    "Задачи, которые уже опубликованы или взяты — не трогаются.\n\n"
+    "Задачи, которые уже опубликованы или взяты — не трогаются "
+    "(их можно убрать кнопкой «🗑 Отменить» на конкретной карточке).\n\n"
     "<b>🔄 Обновить расписание</b>\n"
     "Подтягивает из Airtable свежие данные для уже загруженных задач "
     "(название, текст, режим, лимит). Удобно, если после загрузки что-то поправили в Airtable.\n\n"
-    "<b>🟢 Публикация: ВКЛ / 🔴 Публикация: ВЫКЛ</b>\n"
-    "Глобальный тумблер. Когда выключен, кнопка «✅ Опубликовать» отвечает "
-    "«Публикация выключена глобально» и не отправляет задачу. "
-    "Заблокирован и повторный «Опубликовать» из уведомления о простое.\n\n"
-    "<b>🔁 Карточка задачи → «✅ Опубликовать»</b>\n"
-    "Отправляет задачу в группу ассистентов. Исполнитель берёт её <b>реакцией</b> "
-    "на сообщение (первый поставивший = исполнитель). "
-    "В Airtable ставится Статус = «В работе», Время начала, Исполнитель (ссылка на запись).\n\n"
+    "<b>✅ Опубликовать</b> (на карточке загруженной задачи)\n"
+    "Отправляет задачу в группу ассистентов. В Airtable ставится "
+    "Статус=«Опубликована», «Дата публикации»=сейчас, «Группа»=PUBLISH_GROUP_NAME из .env "
+    "(по умолчанию «ХХ 1.3»). Карточка обновляется: вместо «Опубликовать» — «🗑 Отменить».\n\n"
+    "<b>🗑 Отменить задачу</b> (на карточке опубликованной/взятой задачи)\n"
+    "Удаляет сообщение из рабочей группы, в Airtable возвращает Статус=«Очередь» и "
+    "стирает «Исполнитель», «Время начала», «Время окончания». Если задачу уже взяли — "
+    "исполнителю приходит уведомление в ЛС.\n\n"
+    "<b>👤 Взятие задачи</b>\n"
+    "Исполнитель берёт задачу <b>реакцией</b> на сообщение в группе (первый поставивший = "
+    "исполнитель). В Airtable ставится Статус=«В работе», Время начала, Исполнитель. "
+    "Сообщение в группе автоматически редактируется — добавляется метка «✅ Взял @username», "
+    "чтобы остальные видели, что задача уже занята.\n\n"
     "<b>📨 Принять / Не принять</b>\n"
     "Когда исполнитель пришлёт результат в ЛС боту, в группу модераторов прилетит карточка "
     "с кнопками:\n"
@@ -71,7 +76,10 @@ INFO_TEXT = (
     "новых уведомлений по этой задаче не будет.\n"
     "• Через 15 / 30 / 45 минут, затем 1 / 2 часа после получения результата — "
     "напоминание модератору (если забыл принять или отклонить). После 2 часов "
-    "бот замолкает, задача остаётся в pending-списке.\n\n"
+    "бот замолкает, задача остаётся в pending-списке.\n"
+    "• Раз в 5 минут — синхронизация с Airtable: если задачу удалили в Airtable вручную, "
+    "бот сам отменяет её (удаляет сообщение из группы, ставит «cancelled») и пишет "
+    "сюда уведомление.\n\n"
     "<b>👥 Регистрация ассистентов — обязательно!</b>\n"
     "Бот назначает исполнителя только если его Telegram-username есть в таблице "
     "<b>«Исполнители»</b> Airtable (поле <b>Телеграм</b>, с @ или без). Прежде "
@@ -79,10 +87,8 @@ INFO_TEXT = (
     "таблицу</b>. Если незарегистрированный пользователь поставит реакцию на "
     "задачу, она <u>не будет ему назначена</u>: бот напишет ему в ЛС инструкцию, "
     "а сюда прилетит предупреждение с упоминанием username.\n\n"
-    "Аналогично для модераторов: <b>доступ к самой этой панели</b> и к "
-    "командам <code>/панель</code>, <code>✅ Принять</code>, <code>❌ Не принять</code>, "
-    "<code>🔁 Опубликовать повторно</code> и т.д. даётся тому, кто есть в таблице "
-    "<b>«Команда»</b> Airtable (поле <b>Телеграм</b> = его TG username, с @ или без). "
+    "Аналогично для модераторов: <b>доступ к самой этой панели</b> даётся тому, кто есть "
+    "в таблице <b>«Команда»</b> Airtable (поле <b>Телеграм</b> = его TG username, с @ или без). "
     "Список модераторов подтягивается из Airtable при старте бота и обновляется "
     "каждые 5 минут — добавил/убрал в таблице, изменения применятся автоматически, "
     "рестарт не нужен. При «✅ Принять» этот же username подставляется в поле "
@@ -137,21 +143,9 @@ async def cmd_panel(message: Message) -> None:
     if not cfg.is_moderator(message.from_user):
         await message.answer("Нет прав.")
         return
-    enabled = await db.is_publishing_enabled()
     await message.answer(
         "Панель модератора. Нажмите кнопку снизу.",
-        reply_markup=moderator_reply_kb(enabled),
-    )
-
-
-async def _refresh_reply_kb(message: Message) -> None:
-    """Перерисовать клавиатуру внизу (с актуальным статусом тумблера).
-    Telegram не поддерживает редактирование reply-клавиатуры —
-    отправляем короткое служебное сообщение с новой раскладкой."""
-    enabled = await db.is_publishing_enabled()
-    await message.answer(
-        "🟢 Публикация ВКЛЮЧЕНА" if enabled else "🔴 Публикация ВЫКЛЮЧЕНА",
-        reply_markup=moderator_reply_kb(enabled),
+        reply_markup=moderator_reply_kb(),
     )
 
 
@@ -206,35 +200,6 @@ async def on_refresh_text(message: Message) -> None:
             )
             refreshed += 1
     await message.answer(f"Расписание обновлено. Обновлено задач: {refreshed}")
-
-
-@router.message(F.text.in_({BTN_PUB_ON, BTN_PUB_OFF}))
-async def on_toggle_pub_text(message: Message) -> None:
-    if not cfg.is_moderator(message.from_user):
-        return
-    new_value = not await db.is_publishing_enabled()
-    await db.set_publishing(new_value)
-    await _refresh_reply_kb(message)
-    logger.info("[moderator] publishing_enabled -> %s (via reply-kb)", new_value)
-
-
-@router.callback_query(lambda c: c.data == "toggle_publishing")
-async def on_toggle_publishing(callback: CallbackQuery) -> None:
-    if not cfg.is_moderator(callback.from_user):
-        await callback.answer("Нет прав.", show_alert=True)
-        return
-    new_value = not await db.is_publishing_enabled()
-    await db.set_publishing(new_value)
-    try:
-        await callback.message.edit_reply_markup(
-            reply_markup=moderator_panel_kb(new_value),
-        )
-    except Exception:
-        pass
-    await callback.answer(
-        "Публикация включена" if new_value else "Публикация выключена"
-    )
-    logger.info("[moderator] publishing_enabled -> %s", new_value)
 
 
 @router.callback_query(lambda c: c.data in ("load_tasks", "clear_queue", "refresh_schedule"))
@@ -336,6 +301,9 @@ async def _handle_task_count_input(message: Message) -> None:
         return
 
     inserted = 0
+    updated = 0
+    skipped_active: list[str] = []
+    new_record_ids: list[str] = []
     for task in tasks:
         record_id = task["id"]
         fields = task.get("fields", {})
@@ -346,27 +314,50 @@ async def _handle_task_count_input(message: Message) -> None:
         limit_raw = fields.get("Лимит (час)")
         limit_hours = float(limit_raw) if limit_raw is not None else 0
 
-        ok = await db.insert_task(
+        result = await db.insert_task(
             record_id, task_number or 0, task_name, task_text, mode, limit_hours,
         )
-        if ok:
+        if result == "inserted":
             inserted += 1
+            new_record_ids.append(record_id)
+        elif result == "updated":
+            updated += 1
+            new_record_ids.append(record_id)
+        elif result == "skipped_active":
+            label = f"#{task_number or '?'} {task_name}" if task_name else f"#{task_number or '?'}"
+            skipped_active.append(label)
 
-    await message.answer(f"Загружено задач: {inserted}")
-
-    # Отправляем каждую задачу отдельным сообщением с кнопкой
-    loaded = await db.get_tasks_loaded()
-    for task in loaded:
-        task_preview = (
-            f"📋 Задача #{task['task_number']}\n"
-            f"{_strip_md_bold(task['task_name'])}\n\n"
-            f"{_strip_md_bold(task['task_text'])}"
+    # Составляем сводное сообщение
+    total = inserted + updated
+    summary_lines = [f"Запрошено: {len(tasks)} | загружено: {total}"]
+    if updated:
+        summary_lines.append(f"  • новых: {inserted}, обновлённых: {updated}")
+    if skipped_active:
+        summary_lines.append(
+            f"Пропущено (уже опубликованы / в работе): {len(skipped_active)}"
         )
-        # Карточка после загрузки — решение принимает модератор, поэтому
-        # кнопка «Опубликовать» показывается в обоих режимах. В TEST_MODE
-        # кнопка «Взять задачу (тест)» появится уже на сообщении, имитирующем
-        # публикацию в XX1.3 (см. on_publish).
-        await message.answer(task_preview, reply_markup=publish_task_kb(task["record_id"]))
+        for label in skipped_active[:10]:
+            summary_lines.append(f"  – {label}")
+        if len(skipped_active) > 10:
+            summary_lines.append(f"  … и ещё {len(skipped_active) - 10}")
+    await message.answer("\n".join(summary_lines))
+
+    # Отправляем карточки только для новых/обновлённых записей этой загрузки
+    if new_record_ids:
+        loaded = await db.get_tasks_loaded()
+        new_set = set(new_record_ids)
+        for task in loaded:
+            if task["record_id"] not in new_set:
+                continue
+            task_preview = (
+                f"📋 Задача #{task['task_number']}\n"
+                f"{_strip_md_bold(task['task_name'])}\n\n"
+                f"{_strip_md_bold(task['task_text'])}"
+            )
+            await message.answer(
+                task_preview,
+                reply_markup=publish_task_kb(task["record_id"]),
+            )
 
 
 async def _handle_reject_reason_input(message: Message, bot: Bot, reason_key: str) -> None:
@@ -429,10 +420,6 @@ async def on_publish(callback: CallbackQuery, bot: Bot) -> None:
         await callback.answer("Задача не найдена или уже опубликована.", show_alert=True)
         return
 
-    if not await db.is_publishing_enabled():
-        await callback.answer("Публикация выключена глобально", show_alert=True)
-        return
-
     chat_id = cfg.target_chat_id()
     prefix = cfg.test_prefix()
     text = prefix + _strip_md_bold(task["task_text"])
@@ -454,11 +441,19 @@ async def on_publish(callback: CallbackQuery, bot: Bot) -> None:
 
     await cache.del_stale_notified(record_id)
 
-    # Редактируем сообщение в панели
+    # Airtable: Статус=Опубликована, Дата публикации=now, Группа=cfg.publish_group_name
+    publish_time = utc_now_iso()
+    try:
+        await airtable.set_published(record_id, publish_time, cfg.publish_group_name)
+    except Exception as e:
+        logger.warning("[publish] Airtable set_published(%s) failed: %s", record_id, e)
+
+    # Редактируем сообщение в панели и оставляем кнопку «Отменить»
     try:
         now_str = db.utc_now().strftime("%H:%M")
         await callback.message.edit_text(
             f"✅ Задача #{task['task_number']} опубликована в {now_str}",
+            reply_markup=published_card_kb(record_id),
         )
     except Exception:
         pass
@@ -587,10 +582,6 @@ async def on_restale(callback: CallbackQuery, bot: Bot) -> None:
         await callback.answer("Нет прав.", show_alert=True)
         return
 
-    if not await db.is_publishing_enabled():
-        await callback.answer("Публикация выключена глобально", show_alert=True)
-        return
-
     record_id = callback.data.split("restale_", 1)[1]
     task = await db.get_task_by_record(record_id)
     if not task or task["status"] != "published":
@@ -622,17 +613,102 @@ async def on_restale(callback: CallbackQuery, bot: Bot) -> None:
     # Сбрасываем stale-ключ, чтобы новое сообщение снова попадало под мониторинг.
     await cache.del_stale_notified(record_id)
 
-    # Редактируем уведомление
+    # Обновляем «Дата публикации» в Airtable на новый момент (статус уже Опубликована).
+    try:
+        await airtable.set_published(record_id, utc_now_iso(), cfg.publish_group_name)
+    except Exception as e:
+        logger.warning("[restale] Airtable set_published(%s) failed: %s", record_id, e)
+
+    # Редактируем уведомление, добавляем кнопку «Отменить»
     try:
         await callback.message.edit_text(
             f"🔁 Опубликовано повторно\n\n"
             f"Задача #{task['task_number']}: {task['task_name']}",
+            reply_markup=published_card_kb(record_id),
         )
     except Exception:
         pass
 
     await callback.answer("Опубликовано повторно!")
     logger.info("[moderator] Задача %s переопубликована", record_id)
+
+
+# ── Cancel task ────────────────────────────────────────────────────────────────
+
+@router.callback_query(lambda c: c.data and c.data.startswith("cancel_"))
+async def on_cancel(callback: CallbackQuery, bot: Bot) -> None:
+    """Отменить задачу. Работает на любом статусе (loaded/published/assigned).
+    Удаляет сообщение из рабочей группы, ставит задаче статус='cancelled' в БД,
+    откатывает Airtable в «Очередь», уведомляет исполнителя в ЛС, если задача
+    уже была взята."""
+    if not cfg.is_moderator(callback.from_user):
+        await callback.answer("Нет прав.", show_alert=True)
+        return
+
+    record_id = callback.data.split("cancel_", 1)[1]
+    task = await db.get_task_by_record(record_id)
+    if not task:
+        await callback.answer("Задача не найдена.", show_alert=True)
+        return
+
+    status = task.get("status")
+    if status in ("done", "cancelled"):
+        await callback.answer("Задача уже закрыта.", show_alert=True)
+        return
+
+    # 1. Удалить сообщение из группы (если опубликовано)
+    if status in ("published", "assigned") and task.get("chat_id") and task.get("message_id"):
+        try:
+            await bot.delete_message(
+                chat_id=task["chat_id"], message_id=task["message_id"],
+            )
+        except Exception as e:
+            logger.warning(
+                "[cancel] не удалось удалить сообщение %s/%s: %s",
+                task["chat_id"], task["message_id"], e,
+            )
+
+    # 2. Если уже было назначение — уведомить исполнителя и подчистить pending
+    if status == "assigned":
+        pending = await db.get_pending_result_by_record(record_id)
+        if pending:
+            try:
+                await bot.send_message(
+                    pending["user_id"],
+                    f"❌ Задача #{task.get('task_number')} «{task.get('task_name')}» "
+                    f"отменена модератором. Если ты уже что-то сделал — пришли в ЛС, "
+                    f"мы разберёмся.",
+                )
+            except Exception as e:
+                logger.warning(
+                    "[cancel] не удалось уведомить исполнителя %s: %s",
+                    pending.get("user_id"), e,
+                )
+            await db.delete_pending_result(record_id)
+            await cache.del_result_text(record_id)
+            await cache.del_moderator_message_id(record_id)
+
+    # 3. Обновить БД
+    await db.update_task_cancelled(record_id)
+    await cache.del_stale_notified(record_id)
+
+    # 4. Откатить Airtable в «Очередь»
+    try:
+        await airtable.set_status_queue(record_id)
+    except Exception as e:
+        logger.warning("[cancel] Airtable set_status_queue(%s) failed: %s", record_id, e)
+
+    # 5. Заменить кнопку на текст
+    try:
+        await callback.message.edit_text(
+            f"🗑 Отменено\n\n"
+            f"Задача #{task.get('task_number')}: {task.get('task_name')}",
+        )
+    except Exception:
+        pass
+
+    await callback.answer("Задача отменена")
+    logger.info("[moderator] Задача %s отменена (был статус: %s)", record_id, status)
 
 
 @router.callback_query(lambda c: c.data and c.data.startswith("skip_stale_"))
@@ -691,6 +767,28 @@ async def _assign_user(user_id: int, username: str, record_id: str, bot: Bot) ->
 
     start_time = utc_now_iso()
     await airtable.set_assignee(record_id, username, start_time)
+
+    # Редактируем сообщение в рабочей группе — добавляем метку «✅ Взял @username»
+    # и убираем клавиатуру (актуально для TEST_MODE с кнопкой «Взять задачу»;
+    # в PROD клавиатуры на сообщении нет, но edit_text всё равно делаем,
+    # чтобы остальные ассистенты сразу видели, что задача занята).
+    if task.get("chat_id") and task.get("message_id"):
+        new_text = (
+            f"✅ Задачу взял @{username}\n\n"
+            f"{cfg.test_prefix()}{_strip_md_bold(task['task_text'])}"
+        )
+        try:
+            await bot.edit_message_text(
+                chat_id=task["chat_id"],
+                message_id=task["message_id"],
+                text=new_text,
+                reply_markup=None,
+            )
+        except Exception as e:
+            logger.warning(
+                "[assign] edit_message_text(%s/%s) не удался: %s",
+                task["chat_id"], task["message_id"], e,
+            )
 
     # Уведомление исполнителю в ЛС
     try:

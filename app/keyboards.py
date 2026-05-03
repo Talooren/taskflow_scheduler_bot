@@ -12,21 +12,15 @@ from aiogram.types import (
 BTN_LOAD     = "📥 Загрузить задачи"
 BTN_CLEAR    = "🛑 Очистить очередь"
 BTN_REFRESH  = "🔄 Обновить расписание"
-BTN_PUB_ON   = "🟢 Публикация: ВКЛ"
-BTN_PUB_OFF  = "🔴 Публикация: ВЫКЛ"
 BTN_INFO     = "ℹ️ Информация"
 
 
-def moderator_reply_kb(publishing_enabled: bool) -> ReplyKeyboardMarkup:
-    """Постоянная клавиатура внизу экрана для модератора (persistent reply).
-    Пользователь видит её сразу после /start или /панель и может нажимать
-    вместо команд. Тумблер публикации меняет надпись по состоянию флага."""
-    toggle = BTN_PUB_ON if publishing_enabled else BTN_PUB_OFF
+def moderator_reply_kb() -> ReplyKeyboardMarkup:
+    """Постоянная клавиатура внизу экрана для модератора (persistent reply)."""
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text=BTN_LOAD), KeyboardButton(text=BTN_CLEAR)],
-            [KeyboardButton(text=BTN_REFRESH), KeyboardButton(text=toggle)],
-            [KeyboardButton(text=BTN_INFO)],
+            [KeyboardButton(text=BTN_REFRESH), KeyboardButton(text=BTN_INFO)],
         ],
         resize_keyboard=True,
         is_persistent=True,
@@ -38,14 +32,9 @@ def remove_reply_kb() -> ReplyKeyboardRemove:
     return ReplyKeyboardRemove()
 
 
-def moderator_panel_kb(publishing_enabled: bool = False) -> InlineKeyboardMarkup:
-    """Главная панель модератора. Тумблер публикации отображает
-    текущее состояние publishing_enabled из таблицы settings."""
-    toggle_text = (
-        "🟢 Публикация: ВКЛ" if publishing_enabled else "🔴 Публикация: ВЫКЛ"
-    )
+def moderator_panel_kb() -> InlineKeyboardMarkup:
+    """Главная inline-панель модератора."""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=toggle_text, callback_data="toggle_publishing")],
         [InlineKeyboardButton(text="📥 Загрузить задачи", callback_data="load_tasks")],
         [InlineKeyboardButton(text="🛑 Остановить / очистить очередь", callback_data="clear_queue")],
         [InlineKeyboardButton(text="🔄 Обновить расписание", callback_data="refresh_schedule")],
@@ -56,6 +45,15 @@ def publish_task_kb(record_id: str) -> InlineKeyboardMarkup:
     """Кнопка [✅ Опубликовать] для задачи в панели модератора."""
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Опубликовать", callback_data=f"publish_{record_id}")],
+    ])
+
+
+def published_card_kb(record_id: str) -> InlineKeyboardMarkup:
+    """Кнопка [🗑 Отменить] для уже опубликованной/назначенной задачи.
+    Заменяет «Опубликовать» после успешной публикации, чтобы модератор
+    мог убрать задачу из чата исполнителей."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🗑 Отменить задачу", callback_data=f"cancel_{record_id}")],
     ])
 
 

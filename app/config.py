@@ -35,6 +35,11 @@ class Config:
         self.group_id: int = int(_require("GROUP_ID"))
         self.moderator_group_id: int = int(_require("MODERATOR_GROUP_ID"))
 
+        # Имя группы для записи в Airtable (поле «Группа» в «Итерация»).
+        # Декаплено от group_id: позволяет публиковать в тестовый чат, но
+        # фиксировать в Airtable «ХХ 1.3» как реальную рабочую группу.
+        self.publish_group_name: str = _opt("PUBLISH_GROUP_NAME", "ХХ 1.3")
+
         # Модераторы: основной источник — таблица «Команда» Airtable
         # (username'ы подтягиваются в cfg.moderator_usernames при старте
         # и обновляются раз в 5 минут планировщиком — см. run.py и

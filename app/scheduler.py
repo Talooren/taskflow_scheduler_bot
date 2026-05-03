@@ -179,6 +179,89 @@ async def refresh_moderators() -> None:
         logger.warning("[scheduler] refresh_moderators failed: %s", e)
 
 
+async def _auto_cancel_missing(task: dict) -> None:
+    """Авто-отмена задачи, которую удалили в Airtable вручную.
+
+    Делает то же, что ручная кнопка «🗑 Отменить», но БЕЗ записи в Airtable
+    (записи уже нет) и С уведомлением в группу модераторов о факте удаления.
+    """
+    record_id = task["record_id"]
+    status = task.get("status")
+
+    # 1. Удалить сообщение в рабочей группе
+    if status in ("published", "assigned") and task.get("chat_id") and task.get("message_id"):
+        try:
+            await _bot.delete_message(
+                chat_id=task["chat_id"], message_id=task["message_id"],
+            )
+        except Exception as e:
+            logger.warning(
+                "[sync] delete_message(%s/%s) failed: %s",
+                task["chat_id"], task["message_id"], e,
+            )
+
+    # 2. Уведомить исполнителя в ЛС, если задача уже была взята
+    if status == "assigned":
+        pending = await db.get_pending_result_by_record(record_id)
+        if pending:
+            try:
+                await _bot.send_message(
+                    pending["user_id"],
+                    f"❌ Задача #{task.get('task_number')} "
+                    f"«{task.get('task_name')}» удалена в Airtable модератором. "
+                    f"Работу можно прекратить.",
+                )
+            except Exception as e:
+                logger.warning("[sync] DM executor failed: %s", e)
+            await db.delete_pending_result(record_id)
+            await cache.del_result_text(record_id)
+            await cache.del_moderator_message_id(record_id)
+
+    # 3. Обновить БД и кэш
+    await db.update_task_cancelled(record_id)
+    await cache.del_stale_notified(record_id)
+
+    # 4. Уведомить группу модераторов
+    try:
+        await _bot.send_message(
+            cfg.moderator_group_id,
+            f"🗑 Задача #{task.get('task_number')} «{task.get('task_name')}» "
+            f"удалена в Airtable вручную — авто-отменена ботом.",
+        )
+    except Exception as e:
+        logger.warning("[sync] notify moderators failed: %s", e)
+
+
+async def sync_with_airtable() -> None:
+    """Сверяет активные задачи в БД с Airtable. Если запись точно удалена
+    (HTTP 404), задача авто-отменяется. Транзиентные ошибки (None от
+    record_exists) НЕ приводят к отмене — это защита от массового удаления
+    при сетевом блипе/rate-limit/5xx Airtable.
+
+    Запуск раз в 5 минут — компромисс между свежестью и нагрузкой на API
+    (один GET на каждую активную задачу). При большом количестве активных
+    задач (сотни) можно увеличить интервал.
+    """
+    tasks = await db.get_all_active_tasks()
+    if not tasks:
+        return
+
+    cancelled = 0
+    for task in tasks:
+        if task.get("status") in ("done", "cancelled"):
+            continue
+        record_id = task["record_id"]
+        exists = await airtable.record_exists(record_id)
+        if exists is False:
+            logger.info("[sync] %s удалена в Airtable — авто-отмена", record_id)
+            await _auto_cancel_missing(task)
+            cancelled += 1
+        # exists is True/None — не трогаем
+
+    if cancelled:
+        logger.info("[sync] auto-cancelled %d task(s)", cancelled)
+
+
 def setup(bot: Bot) -> None:
     global _bot
     _bot = bot
@@ -198,8 +281,15 @@ def setup(bot: Bot) -> None:
         id="mod_refresh",
         replace_existing=True,
     )
+    scheduler.add_job(
+        sync_with_airtable,
+        "interval",
+        minutes=5,
+        id="airtable_sync",
+        replace_existing=True,
+    )
     scheduler.start()
     logger.info(
         "[scheduler] Запущен: check_stale=1min, check_pending_moderation=5min, "
-        "refresh_moderators=5min"
+        "refresh_moderators=5min, sync_with_airtable=5min"
     )

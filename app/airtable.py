@@ -112,6 +112,36 @@ async def fetch_record(record_id: str) -> dict | None:
             return None
 
 
+async def record_exists(record_id: str) -> bool | None:
+    """Проверить, существует ли запись в Airtable.
+
+    Возвращает:
+      True  — запись существует (HTTP 200);
+      False — запись точно удалена (HTTP 404 NOT_FOUND);
+      None  — не удалось определить (сеть / 401 / 429 / 5xx). Используется
+              шедулером sync_with_airtable: при None задача НЕ отменяется,
+              чтобы транзиентная ошибка Airtable не превратилась в массовую
+              отмену задач.
+    """
+    await _rate_limit()
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(
+                _table_url(f"/{record_id}"), headers=_headers()
+            ) as resp:
+                if resp.status in (200, 201):
+                    return True
+                if resp.status == 404:
+                    return False
+                # Прочитываем тело, чтобы Airtable отличил 404 NOT_FOUND_FOR_RECORD
+                # от 404 базы или прочих ошибок. Но в любом случае считаем
+                # «не уверены» и оставляем задачу как есть.
+                return None
+        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+            logger.warning("record_exists(%s) network error: %s", record_id, e)
+            return None
+
+
 async def patch_record(record_id: str, fields: dict) -> dict | None:
     """PATCH с идемпотентной проверкой и ретраем (3 попытки, 1/2/4 с).
 
@@ -264,6 +294,47 @@ async def get_assistant_record_id(username: str | None) -> str | None:
 async def get_team_record_id(username: str | None) -> str | None:
     """Публичная обёртка: record_id члена команды по Телеграм в таблице «Команда»."""
     return await _lookup_record_id_by_telegram("Команда", username) if username else None
+
+
+async def set_published(
+    record_id: str,
+    publish_time_utc: str,
+    group_name: str,
+) -> bool:
+    """Перевести задачу в «Опубликована»: пишет «Статус», «Дата публикации»
+    (фактический момент публикации) и «Группа» (singleSelect, имя из cfg).
+
+    Группа жёстко берётся из cfg.publish_group_name — даже если бот сейчас
+    шлёт в тестовый чат, в Airtable фиксируется реальное имя группы.
+    """
+    fields = {
+        "Статус": "Опубликована",
+        "Дата публикации": publish_time_utc,
+        "Группа": group_name,
+    }
+    result = await patch_record(record_id, fields)
+    if result:
+        logger.info("Airtable: %s -> Опубликована (Группа=%s)", record_id, group_name)
+    return result is not None
+
+
+async def set_status_queue(record_id: str) -> bool:
+    """Откатить задачу обратно в «Очередь»: сбрасывает «Статус» и затирает
+    «Исполнитель», «Время начала», «Время окончания». Используется при
+    отмене задачи модератором (кнопка «Отменить») и при обнаружении ручного
+    удаления записи в Airtable шедулером — но в случае удаления вызов уже
+    бессмысленен (записи нет), поэтому он только для отмены.
+    """
+    fields: dict = {
+        "Статус": "Очередь",
+        "Исполнитель": [],
+        "Время начала": None,
+        "Время окончания": None,
+    }
+    result = await patch_record(record_id, fields)
+    if result:
+        logger.info("Airtable: %s -> Очередь (отмена)", record_id)
+    return result is not None
 
 
 async def set_assignee(record_id: str, username: str, start_time_utc: str) -> bool:

@@ -222,18 +222,26 @@ async def insert_task(
     task_text: str,
     mode: str | None,
     limit_hours: float,
-) -> bool:
-    """UPSERT: если запись уже есть в БД со статусом 'loaded' или 'done' —
-    она «сбрасывается» обратно в loaded с обновлёнными полями (кейс: Airtable
-    вернул задачу в Очередь после закрытия или редактирования). Если запись
-    в 'published' или 'assigned' — UPDATE не делается, чтобы не затереть
-    активную работу исполнителя.
+) -> str:
+    """UPSERT задачи. Возвращает код результата:
+        'inserted'       — новая запись добавлена;
+        'updated'        — существовала в 'loaded'/'done', сброшена в 'loaded'
+                           с обновлёнными полями (кейс: Airtable вернул задачу
+                           в Очередь после закрытия или редактирования);
+        'skipped_active' — существует в 'published' или 'assigned', не тронута,
+                           чтобы не сломать активную работу.
 
-    Возвращает True, если строка вставлена или обновлена; False, если задача
-    занята (published/assigned) и пропущена."""
+    Дополнительно учитываем 'cancelled' — отменённые задачи можно пере-загрузить
+    как 'loaded' (модератор отменил, потом передумал и заново положил в очередь).
+    """
+    existing = await get_task_by_record(record_id)
+    if existing and existing.get("status") in ("published", "assigned"):
+        return "skipped_active"
+
+    is_update = existing is not None
     if _use_postgres:
         async with _pg_pool.acquire() as con:
-            result = await con.execute(
+            await con.execute(
                 """
                 INSERT INTO tasks (record_id, task_number, task_name, task_text,
                                    mode, limit_hours, status, loaded_at)
@@ -249,17 +257,13 @@ async def insert_task(
                     message_id   = NULL,
                     published_at = NULL,
                     loaded_at    = NOW()
-                WHERE tasks.status IN ('loaded', 'done')
                 """,
                 record_id, task_number, task_name, task_text, mode, limit_hours,
             )
-            # INSERT 0 1 — если вставилось ИЛИ сработал DO UPDATE;
-            # INSERT 0 0 — если WHERE отсёк UPDATE (active task).
-            return result == "INSERT 0 1"
     else:
         con = _get_sqlite_conn()
         try:
-            cur = con.execute(
+            con.execute(
                 """
                 INSERT INTO tasks (record_id, task_number, task_name, task_text,
                                    mode, limit_hours, status, loaded_at)
@@ -275,14 +279,13 @@ async def insert_task(
                     message_id   = NULL,
                     published_at = NULL,
                     loaded_at    = datetime('now')
-                WHERE tasks.status IN ('loaded', 'done')
                 """,
                 (record_id, task_number, task_name, task_text, mode, limit_hours),
             )
             con.commit()
-            return cur.rowcount > 0
         finally:
             con.close()
+    return "updated" if is_update else "inserted"
 
 
 async def get_tasks_loaded() -> list[dict]:
@@ -413,6 +416,26 @@ async def update_task_done(record_id: str) -> None:
         try:
             con.execute(
                 "UPDATE tasks SET status = 'done' WHERE record_id = ?", (record_id,)
+            )
+            con.commit()
+        finally:
+            con.close()
+
+
+async def update_task_cancelled(record_id: str) -> None:
+    """Отменить задачу: status='cancelled'. Не удаляет строку, чтобы при
+    повторной загрузке из Airtable можно было увидеть историю и решить, что
+    делать. insert_task поверх 'cancelled' сбрасывает обратно в 'loaded'."""
+    if _use_postgres:
+        async with _pg_pool.acquire() as con:
+            await con.execute(
+                "UPDATE tasks SET status = 'cancelled' WHERE record_id = $1", record_id
+            )
+    else:
+        con = _get_sqlite_conn()
+        try:
+            con.execute(
+                "UPDATE tasks SET status = 'cancelled' WHERE record_id = ?", (record_id,)
             )
             con.commit()
         finally:
