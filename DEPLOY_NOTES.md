@@ -2,7 +2,7 @@
 
 > Дата: 2026-04-18
 > Сервер: `109.120.138.241` (Hetzner/Aeza, Ubuntu 24.04, Docker 29.3.1, Compose v5.1.1)
-> Путь: `/root/taskflow_bot`
+> Путь: `/home/claude/taskflow_bot` (актуализировано 2026-05-03; ранее было `/home/claude/taskflow_bot` — проект перенесён под пользователя `claude`)
 
 ---
 
@@ -19,15 +19,15 @@
 **Сеть:** `taskflow_net` (bridge). Бот ходит в БД по DNS-имени `postgres:5432`, в кэш — `redis:6379`. Соседние сети (`proxy-net`, `elina_elina_net`) **не затронуты**.
 
 **Файлы локально:** `Dockerfile`, `.dockerignore`, `docker-compose.yml`, `.env.example`, `DEPLOY_NOTES.md`.
-**Файлы на сервере:** вся кодовая база в `/root/taskflow_bot`, плюс созданный на месте `/root/taskflow_bot/.env` с правами `600`.
+**Файлы на сервере:** вся кодовая база в `/home/claude/taskflow_bot`, плюс созданный на месте `/home/claude/taskflow_bot/.env` с правами `600`.
 
 **Состояние контейнеров:** все три в статусе `Created` (не запущены). Образ бота собран, PG и Redis образы скачаны.
 
-**Пароль PostgreSQL:** сгенерирован случайно (32 символа, alpha+digits), записан в **`/root/taskflow_bot/.env`** на сервере в двух местах синхронно:
+**Пароль PostgreSQL:** сгенерирован случайно (32 символа, alpha+digits), записан в **`/home/claude/taskflow_bot/.env`** на сервере в двух местах синхронно:
 - `POSTGRES_PASSWORD=<значение>`
 - `PG_DSN=postgresql://taskflow:<значение>@postgres:5432/taskflow`
 
-Локально пароль не хранится. Посмотреть можно на сервере: `grep POSTGRES_PASSWORD /root/taskflow_bot/.env`.
+Локально пароль не хранится. Посмотреть можно на сервере: `grep POSTGRES_PASSWORD /home/claude/taskflow_bot/.env`.
 
 **Что НЕ тронуто у соседей:**
 - `elina`, `3x-ui`, `nginx-proxy` — работают, статус `Up` как и был.
@@ -42,7 +42,7 @@
 
 ```bash
 ssh root@109.120.138.241
-cd /root/taskflow_bot
+cd /home/claude/taskflow_bot
 nano .env
 ```
 
@@ -56,6 +56,9 @@ nano .env
 - `MODERATOR_GROUP_ID=` → id группы модераторов
 - `MODERATOR_IDS=123,456` → через запятую, без пробелов
 - `TEST_USER_ID=` → твой Telegram id
+- `PUBLISH_GROUP_NAME=ХХ 1.3` → имя группы для записи в Airtable «Группа» при публикации.
+  Декаплено от `GROUP_ID`: можно слать в тестовый чат, но логировать как реальную «ХХ 1.3».
+  Должно ровно совпадать с одним из значений singleSelect-поля «Группа» в «Итерации».
 
 **Не трогать:** `TEST_MODE=true` (для первого прогона), `POSTGRES_USER`, `POSTGRES_DB`, `POSTGRES_PASSWORD`, `PG_DSN`, `REDIS_URL`.
 
@@ -120,7 +123,7 @@ docker compose logs -f --tail=100 bot
 После успешного прогона:
 
 ```bash
-cd /root/taskflow_bot
+cd /home/claude/taskflow_bot
 # на сервере отредактировать docker-compose.yml:
 sed -i 's/restart: "no"/restart: unless-stopped/' docker-compose.yml
 # применить изменение:
@@ -131,7 +134,7 @@ docker compose ps
 ### Б.6. Боевой режим (после «ОК» от тебя)
 
 ```bash
-cd /root/taskflow_bot
+cd /home/claude/taskflow_bot
 nano .env            # TEST_MODE=true → TEST_MODE=false
 docker compose restart bot
 docker compose logs -f --tail=50 bot
@@ -144,7 +147,7 @@ docker compose logs -f --tail=50 bot
 ## В. Повседневные команды
 
 ```bash
-cd /root/taskflow_bot
+cd /home/claude/taskflow_bot
 
 # Статус
 docker compose ps
@@ -158,7 +161,7 @@ docker compose logs -f --tail=100 redis
 #   (на локальной машине — отредактировать код, затем:)
 #   rsync -avz --delete --exclude='venv/' --exclude='__pycache__/' \
 #         --exclude='.env' --exclude='data/' --exclude='logs/' \
-#         --exclude='.git/' ./ root@109.120.138.241:/root/taskflow_bot/
+#         --exclude='.git/' ./ root@109.120.138.241:/home/claude/taskflow_bot/
 docker compose build bot && docker compose up -d bot
 
 # Бэкап PG (запускать на сервере)
@@ -229,4 +232,4 @@ docker compose start postgres
 
 ---
 
-*Файл лежит также на сервере: `/root/taskflow_bot/DEPLOY_NOTES.md`. Пароль PG в этот файл НЕ помещён — читай его из `/root/taskflow_bot/.env` командой `grep POSTGRES_PASSWORD /root/taskflow_bot/.env`.*
+*Файл лежит также на сервере: `/home/claude/taskflow_bot/DEPLOY_NOTES.md`. Пароль PG в этот файл НЕ помещён — читай его из `/home/claude/taskflow_bot/.env` командой `grep POSTGRES_PASSWORD /home/claude/taskflow_bot/.env`.*
