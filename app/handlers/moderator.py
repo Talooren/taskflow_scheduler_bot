@@ -197,11 +197,30 @@ async def cmd_panel(message: Message) -> None:
 # ВАЖНО: эти хэндлеры должны идти ДО _awaiting_moderator_input, иначе ввод
 # текста кнопки будет интерпретирован как ответ на запрос «сколько задач?».
 
+def _split_info_text(text: str, max_len: int = 3500) -> list[str]:
+    """Режет INFO_TEXT по границам «\\n\\n», чтобы каждое сообщение влезало
+    в Telegram лимит 4096 символов и не разрывало HTML-теги (теги балансные
+    внутри каждого раздела INFO_TEXT). Гарантия: chunk не больше max_len."""
+    chunks: list[str] = []
+    buf = ""
+    for para in text.split("\n\n"):
+        candidate = para if not buf else buf + "\n\n" + para
+        if len(candidate) > max_len and buf:
+            chunks.append(buf)
+            buf = para
+        else:
+            buf = candidate
+    if buf:
+        chunks.append(buf)
+    return chunks
+
+
 @router.message(F.text == BTN_INFO)
 async def on_info_text(message: Message) -> None:
     if not cfg.is_moderator(message.from_user):
         return
-    await message.answer(INFO_TEXT, parse_mode="HTML")
+    for chunk in _split_info_text(INFO_TEXT):
+        await message.answer(chunk, parse_mode="HTML")
 
 
 @router.message(F.text == BTN_LOAD)
