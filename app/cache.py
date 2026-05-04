@@ -123,7 +123,11 @@ async def _redis_scan_delete(pattern: str) -> int:
 
 # ── Публичные хелперы ──────────────────────────────────────────────────────────
 
-async def set_stale_notified(record_id: str, ttl: int = 86400) -> None:
+async def set_stale_notified(record_id: str, ttl: int | None = None) -> None:
+    """Дедуп stale-уведомления: уведомление должно прозвучать ровно один
+    раз за «жизнь» задачи. Ключ снимается при publish/restale/cancel/take/
+    auto-cancel-missing — поэтому TTL не нужен. Раньше TTL=24ч приводил
+    к ложному повтору каждые сутки для забытых задач."""
     await _redis_set(f"stale_notified:{record_id}", "1", ex=ttl)
 
 
